@@ -1,52 +1,17 @@
-use duckdb::arrow::record_batch::RecordBatch;
-use duckdb::arrow::util::pretty::print_batches;
-use duckdb::{params, Connection, Result};
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
 
-#[derive(Debug)]
-struct Person {
-    #[allow(dead_code)]
-    id: i32,
-    name: String,
-    data: Option<Vec<u8>>,
-}
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
 
-fn main() -> Result<()> {
-    let conn = Connection::open("data.db")?;
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-args=-ObjC"]
 
-    conn.execute_batch(
-        r"CREATE SEQUENCE seq;
-          CREATE TABLE person (
-                  id              INTEGER PRIMARY KEY DEFAULT NEXTVAL('seq'),
-                  name            TEXT NOT NULL,
-                  data            BLOB
-                  );
-         ",
-    )?;
-    let me = Person {
-        id: 0,
-        name: "Steven".to_string(),
-        data: None,
-    };
-    conn.execute(
-        "INSERT INTO person (name, data) VALUES (?, ?)",
-        params![me.name, me.data],
-    )?;
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-args=-ObjC"]
 
-    let mut stmt = conn.prepare("SELECT id, name, data FROM person")?;
-    let person_iter = stmt.query_map([], |row| {
-        Ok(Person {
-            id: row.get(0)?,
-            name: row.get(1)?,
-            data: row.get(2)?,
-        })
-    })?;
+[target.aarch64-apple-ios]
+rustflags = ["-C", "link-args=-ObjC"]
 
-    for person in person_iter {
-        println!("Found person {:?}", person.unwrap());
-    }
-
-    // query table by arrow
-    let rbs: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
-    print_batches(&rbs).unwrap();
-    Ok(())
-}
+[target.aarch64-apple-ios-sim]
+rustflags = ["-C", "link-args=-ObjC"]

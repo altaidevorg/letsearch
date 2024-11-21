@@ -3,11 +3,11 @@ use crate::model::traits::onnx_trait::ONNXModelTrait;
 use anyhow::Error;
 use async_trait::async_trait;
 use half::f16;
-use log::debug;
+use log::{debug, warn};
 use ndarray::Array2;
 use ort::{CPUExecutionProvider, GraphOptimizationLevel, Session};
-use std::path::Path;
-use tokenizers::Tokenizer;
+use std::{default, path::Path};
+use tokenizers::{PaddingParams, Tokenizer};
 
 pub struct BertONNX {
     pub model: Option<Session>,
@@ -30,8 +30,8 @@ impl BertONNX {
 
 #[async_trait]
 impl ModelTrait for BertONNX {
-    async fn predict(&self, input: &str) -> Result<String, String> {
-        let inputs: Vec<String> = input.lines().map(|s| s.to_string()).collect();
+    async fn predict(&self, texts: Vec<&str>) -> Result<String, String> {
+        let inputs: Vec<String> = texts.into_iter().map(|s| s.to_string()).collect();
 
         // Encode input strings.
         let model = self
@@ -44,9 +44,10 @@ impl ModelTrait for BertONNX {
             .as_ref()
             .ok_or_else(|| "Model is not loaded".to_string())?;
 
-        let encodings = tokenizer.encode_batch(inputs.clone(), false).unwrap();
+        let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
         let padded_token_length = encodings[0].len();
 
+        // Extract token IDs and attention masks
         let ids: Vec<i64> = encodings
             .iter()
             .flat_map(|e| e.get_ids().iter().map(|i| *i as i64))
@@ -90,8 +91,17 @@ impl ModelTrait for BertONNX {
             .commit_from_file(Path::join(model_source_path, "model.onnx"))
             .unwrap();
 
-        let tokenizer =
+        let mut tokenizer =
             Tokenizer::from_file(Path::join(model_source_path, "tokenizer.json")).unwrap();
+        tokenizer.with_padding(Some(PaddingParams {
+            strategy: tokenizers::PaddingStrategy::BatchLongest,
+            pad_to_multiple_of: None,
+            pad_id: 0,
+            pad_type_id: 0,
+            direction: tokenizers::PaddingDirection::Right,
+            pad_token: "<PAD>".into(),
+        }));
+
         self.model = Some(session);
         self.tokenizer = Some(tokenizer);
         Ok(())

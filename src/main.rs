@@ -6,9 +6,11 @@ use crate::model::manager::ModelManager;
 use crate::model::traits::Backend;
 use crate::serve::run_server;
 use anyhow;
+use chrono;
 use clap::{Parser, Subcommand};
-use env_logger;
-use log::{debug, info};
+use env_logger::fmt::Formatter;
+use log::{debug, info, Record};
+use std::io::Write;
 use std::time::Instant;
 
 /// CLI application for indexing and searching documents
@@ -43,8 +45,8 @@ enum Commands {
         model: String,
 
         /// Enable verbose output
-        #[arg(short, long, action = clap::ArgAction::SetTrue)]
-        verbose: bool,
+        #[arg(short, long, action = clap::ArgAction::Append)]
+        index_columns: Vec<String>,
 
         /// remove and re-create collection directory if it exists
         #[arg(long, action=clap::ArgAction::SetTrue)]
@@ -66,6 +68,15 @@ enum Commands {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::builder()
+        .format(|buf: &mut Formatter, record: &Record| {
+            writeln!(
+                buf,
+                "[{} {}] {}",
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                record.level(),
+                record.args()
+            )
+        })
         .filter_module("ort::execution_providers", log::LevelFilter::Error)
         .filter_level(log::LevelFilter::Info)
         .init();
@@ -77,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
             files,
             collection_name,
             model,
-            verbose,
+            index_columns,
             overwrite,
         } => {
             let collection =
@@ -89,14 +100,19 @@ async fn main() -> anyhow::Result<()> {
                 .load_model(model.to_string(), Backend::ONNX)
                 .await
                 .unwrap();
-            info!("model loaded successfully");
+            info!("model successfully loaded from {model}");
             let start = Instant::now();
-            let res = model_manager
-                .predict(model_id, "this is a test")
-                .await
-                .unwrap();
+            let inputs = vec![
+                "This is a test",
+                "how long is it running? Maybe little bit longer",
+            ];
+            let res = model_manager.predict(model_id, inputs).await.unwrap();
             info!("it took: {:?}", start.elapsed());
             debug!("{res}");
+            let start_2nd = Instant::now();
+            let inputs2 = vec!["This is another test", "with batch size = 2"];
+            let _ = model_manager.predict(model_id, inputs2).await.unwrap();
+            info!("2nd pass took: {:?}", start_2nd.elapsed());
         }
 
         Commands::Serve { host, port } => {

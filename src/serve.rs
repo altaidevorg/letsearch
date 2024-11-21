@@ -30,7 +30,6 @@ async fn search(req: web::Json<QueryRequest>) -> impl Responder {
     HttpResponse::Ok().body("ok")
 }
 
-//#[actix_web::main]
 pub async fn run_server(host: String, port: i32) -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()

@@ -1,6 +1,6 @@
 use anyhow;
 use duckdb::Connection;
-use log::{debug, info};
+use log::debug;
 use std::fs;
 use std::path::Path;
 

@@ -44,13 +44,13 @@ impl ModelManager {
         Ok(model_id)
     }
 
-    pub async fn predict(&self, model_id: u32, input: &str) -> Result<String, Error> {
+    pub async fn predict(&self, model_id: u32, texts: Vec<&str>) -> Result<String, Error> {
         let models = self.models.read().await;
         match models.get(&model_id) {
             Some(model) => {
                 let model_guard = model.read().await; // Lock the RwLock for reading
                 model_guard
-                    .predict(input)
+                    .predict(texts)
                     .await
                     .map_err(|e| Error::msg(e.to_string()))
             }
