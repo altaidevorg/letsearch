@@ -1,9 +1,13 @@
 use anyhow;
+use duckdb::arrow::array::StringArray;
+use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
-use log::debug;
+use log::{debug, info};
 use std::fs;
 use std::path::Path;
+use std::time::Instant;
 
+use crate::model::manager::ModelManager;
 pub struct Collection {
     name: String,
     conn: Connection,
@@ -39,6 +43,66 @@ impl Collection {
         )?;
         debug!("JSONL file imported");
 
+        Ok(())
+    }
+
+    pub fn get_single_column(
+        &self,
+        column_name: &str,
+        batch_size: i32,
+        offset: i32,
+    ) -> anyhow::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            format!(
+                "SELECT {} FROM {} LIMIT {} OFFSET {};",
+                column_name, &self.name, batch_size, offset
+            )
+            .as_str(),
+        )?;
+        let result: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
+        assert_eq!(result.len(), 1);
+        let batch = &result[0];
+        //let num_rows = batch.num_rows();
+        //let num_cols = batch.num_columns();
+
+        let schema = batch.schema();
+        let column_names: Vec<&str> = schema
+            .fields
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect::<Vec<&str>>();
+        let col = &column_names[0];
+        let col_array = batch
+            .column_by_name(col)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let col_values: Vec<String> = col_array
+            .iter()
+            .map(|s| s.unwrap().to_string())
+            .collect::<Vec<String>>();
+
+        Ok(col_values)
+    }
+
+    pub async fn embed_column(
+        &self,
+        column_name: &str,
+        batch_size: i32,
+        offset: i32,
+        model_manager: &ModelManager,
+        model_id: u32,
+    ) -> anyhow::Result<()> {
+        let start = Instant::now();
+        let texts = self
+            .get_single_column(column_name, batch_size, offset)
+            .unwrap();
+        info!("getting texts from DB took: {:?}", start.elapsed());
+        let start = Instant::now();
+        let inputs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let _ = model_manager.predict(model_id, inputs).await.unwrap();
+        info!("Embedding texts took: {:?}", start.elapsed());
         Ok(())
     }
 }

@@ -9,14 +9,13 @@ use anyhow;
 use chrono;
 use clap::{Parser, Subcommand};
 use env_logger::fmt::Formatter;
-use log::{debug, info, Record};
+use log::{info, Record};
 use std::io::Write;
-use std::time::Instant;
 
 /// CLI application for indexing and searching documents
 #[derive(Parser, Debug)]
 #[command(
-    name = "searche",
+    name = "letsearche",
     version = "0.1.0",
     author = "yusufsarigoz@gmail.com",
     about = "Index and search your documents, and serve it if you wish",
@@ -44,7 +43,7 @@ enum Commands {
         #[arg(short, long, default_value = "bge-m3")]
         model: String,
 
-        /// Enable verbose output
+        /// columns to embed and index for vector search
         #[arg(short, long, action = clap::ArgAction::Append)]
         index_columns: Vec<String>,
 
@@ -56,7 +55,7 @@ enum Commands {
     /// serve a collection for search over web API
     Serve {
         /// host to listen to
-        #[arg(short, long, default_value = "127.0.0.1")]
+        #[arg(short('H'), long, default_value = "127.0.0.1")]
         host: String,
 
         /// port to listen to
@@ -91,6 +90,9 @@ async fn main() -> anyhow::Result<()> {
             index_columns,
             overwrite,
         } => {
+            if !index_columns.is_empty() {
+                info!("index columns: {:?}", index_columns);
+            }
             let collection =
                 Collection::new(collection_name.to_string(), overwrite.to_owned()).unwrap();
             let jsonl_path = &files[0];
@@ -101,18 +103,10 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .unwrap();
             info!("model successfully loaded from {model}");
-            let start = Instant::now();
-            let inputs = vec![
-                "This is a test",
-                "how long is it running? Maybe little bit longer",
-            ];
-            let res = model_manager.predict(model_id, inputs).await.unwrap();
-            info!("it took: {:?}", start.elapsed());
-            debug!("{res}");
-            let start_2nd = Instant::now();
-            let inputs2 = vec!["This is another test", "with batch size = 2"];
-            let _ = model_manager.predict(model_id, inputs2).await.unwrap();
-            info!("2nd pass took: {:?}", start_2nd.elapsed());
+            let _ = collection
+                .embed_column("user", 2, 0, &model_manager, model_id)
+                .await
+                .unwrap();
         }
 
         Commands::Serve { host, port } => {

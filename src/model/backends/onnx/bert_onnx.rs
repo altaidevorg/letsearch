@@ -3,10 +3,10 @@ use crate::model::traits::onnx_trait::ONNXModelTrait;
 use anyhow::Error;
 use async_trait::async_trait;
 use half::f16;
-use log::{debug, warn};
+use log::debug;
 use ndarray::Array2;
 use ort::{CPUExecutionProvider, GraphOptimizationLevel, Session};
-use std::{default, path::Path};
+use std::path::Path;
 use tokenizers::{PaddingParams, Tokenizer};
 
 pub struct BertONNX {
@@ -86,7 +86,7 @@ impl ModelTrait for BertONNX {
             .unwrap()
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .unwrap()
-            .with_intra_threads(4)
+            .with_intra_threads(8)
             .unwrap()
             .commit_from_file(Path::join(model_source_path, "model.onnx"))
             .unwrap();
