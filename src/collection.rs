@@ -49,9 +49,10 @@ impl Collection {
     pub fn get_single_column(
         &self,
         column_name: &str,
-        batch_size: i32,
-        offset: i32,
+        batch_size: u32,
+        offset: u32,
     ) -> anyhow::Result<Vec<String>> {
+        assert!(batch_size >= 1);
         let mut stmt = self.conn.prepare(
             format!(
                 "SELECT {} FROM {} LIMIT {} OFFSET {};",
@@ -89,8 +90,8 @@ impl Collection {
     pub async fn embed_column(
         &self,
         column_name: &str,
-        batch_size: i32,
-        offset: i32,
+        batch_size: u32,
+        offset: u32,
         model_manager: &ModelManager,
         model_id: u32,
     ) -> anyhow::Result<()> {
@@ -101,7 +102,11 @@ impl Collection {
         info!("getting texts from DB took: {:?}", start.elapsed());
         let start = Instant::now();
         let inputs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let _ = model_manager.predict(model_id, inputs).await.unwrap();
+        let output_dtype = model_manager.output_dtype(model_id).await;
+        let embeddings = match output_dtype {
+            f16 => model_manager.predict_f16(model_id, inputs).await.unwrap(),
+            _ => unreachable!("not yet implemene"),
+        };
         info!("Embedding texts took: {:?}", start.elapsed());
         Ok(())
     }

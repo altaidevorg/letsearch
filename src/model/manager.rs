@@ -1,14 +1,16 @@
+use super::traits::onnx_trait::ONNXModel;
+use super::traits::ModelOutputDType;
 use crate::model::backends::onnx::bert_onnx::BertONNX;
 use crate::model::traits::Backend;
 use anyhow::Error;
+use half::f16;
+use ndarray::Array2;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use super::traits::model_trait::ModelTrait;
-
 pub struct ModelManager {
-    models: RwLock<HashMap<u32, Arc<RwLock<dyn ModelTrait + Send + Sync>>>>,
+    models: RwLock<HashMap<u32, Arc<RwLock<dyn ONNXModel>>>>,
     next_id: RwLock<u32>,
 }
 
@@ -21,7 +23,7 @@ impl ModelManager {
     }
 
     pub async fn load_model(&self, model_path: String, model_type: Backend) -> Result<u32, Error> {
-        let model: Arc<RwLock<dyn ModelTrait + Send + Sync>> = match model_type {
+        let model: Arc<RwLock<dyn ONNXModel>> = match model_type {
             Backend::ONNX => Arc::new(RwLock::new(BertONNX::new())),
             // _ => unreachable!("not implemented"),
         };
@@ -44,17 +46,29 @@ impl ModelManager {
         Ok(model_id)
     }
 
-    pub async fn predict(&self, model_id: u32, texts: Vec<&str>) -> Result<String, Error> {
+    pub async fn predict_f16(
+        &self,
+        model_id: u32,
+        texts: Vec<&str>,
+    ) -> anyhow::Result<Arc<Array2<f16>>> {
         let models = self.models.read().await;
         match models.get(&model_id) {
             Some(model) => {
                 let model_guard = model.read().await; // Lock the RwLock for reading
-                model_guard
-                    .predict(texts)
-                    .await
-                    .map_err(|e| Error::msg(e.to_string()))
+                Ok(model_guard.predict_f16(texts).await?)
             }
             None => Err(Error::msg("Model not found")),
+        }
+    }
+
+    pub async fn output_dtype(&self, model_id: u32) -> ModelOutputDType {
+        let models = self.models.read().await;
+        match models.get(&model_id) {
+            Some(model) => {
+                let model_guard = model.read().await; // Lock the RwLock for reading
+                model_guard.output_dtype().await
+            }
+            None => unreachable!("this will never hit"),
         }
     }
 }

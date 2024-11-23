@@ -1,22 +1,20 @@
-use crate::model::traits::model_trait::ModelTrait;
 use crate::model::traits::onnx_trait::ONNXModelTrait;
+use crate::model::traits::{model_trait::ModelTrait, ModelOutputDType};
 use anyhow::Error;
 use async_trait::async_trait;
 use half::f16;
 use log::debug;
-use ndarray::Array2;
+use ndarray::{Array2, Ix2};
 use ort::{CPUExecutionProvider, GraphOptimizationLevel, Session};
 use std::path::Path;
+use std::sync::Arc;
+use std::thread::available_parallelism;
 use tokenizers::{PaddingParams, Tokenizer};
 
 pub struct BertONNX {
     pub model: Option<Session>,
     pub tokenizer: Option<Tokenizer>,
-}
-
-#[async_trait]
-impl ONNXModelTrait for BertONNX {
-    //todo
+    output_dtype: Option<ModelOutputDType>,
 }
 
 impl BertONNX {
@@ -24,26 +22,63 @@ impl BertONNX {
         Self {
             tokenizer: None,
             model: None,
+            output_dtype: None,
         }
     }
 }
 
 #[async_trait]
 impl ModelTrait for BertONNX {
-    async fn predict(&self, texts: Vec<&str>) -> Result<String, String> {
+    async fn load_model(&mut self, model_path: &str) -> Result<(), Error> {
+        let model_source_path = Path::new(model_path);
+        ort::init()
+            .with_name("onnx_model")
+            .with_execution_providers([CPUExecutionProvider::default().build()])
+            .commit()
+            .expect("Failed to initialize ORT environment");
+
+        let session = Session::builder()
+            .unwrap()
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .unwrap()
+            .with_intra_threads(available_parallelism()?.get())
+            .unwrap()
+            .commit_from_file(Path::join(model_source_path, "model.onnx"))
+            .unwrap();
+
+        let mut tokenizer =
+            Tokenizer::from_file(Path::join(model_source_path, "tokenizer.json")).unwrap();
+
+        tokenizer.with_padding(Some(PaddingParams {
+            strategy: tokenizers::PaddingStrategy::BatchLongest,
+            pad_to_multiple_of: None,
+            pad_id: 1,
+            pad_type_id: 0,
+            direction: tokenizers::PaddingDirection::Right,
+            pad_token: "<pad>".into(),
+        }));
+
+        self.model = Some(session);
+        self.tokenizer = Some(tokenizer);
+        self.output_dtype = Some(ModelOutputDType::F16); //hardcoded for now
+        Ok(())
+    }
+
+    async fn unload_model(&self) -> Result<(), String> {
+        //Unload model
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ONNXModelTrait for BertONNX {
+    async fn predict_f16(&self, texts: Vec<&str>) -> anyhow::Result<Arc<Array2<f16>>> {
         let inputs: Vec<String> = texts.into_iter().map(|s| s.to_string()).collect();
 
         // Encode input strings.
-        let model = self
-            .model
-            .as_ref()
-            .ok_or_else(|| "Model is not loaded".to_string())?;
+        let model = self.model.as_ref().unwrap();
 
-        let tokenizer = self
-            .tokenizer
-            .as_ref()
-            .ok_or_else(|| "Model is not loaded".to_string())?;
-
+        let tokenizer = self.tokenizer.as_ref().unwrap();
         let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
         let padded_token_length = encodings[0].len();
 
@@ -64,51 +99,16 @@ impl ModelTrait for BertONNX {
         let outputs = model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap();
 
         // Extract embeddings tensor.
-        let embeddings_tensor = match outputs[1].try_extract_tensor::<f16>() {
-            Ok(tensor) => tensor.map(|x| x.to_f32()),
-            Err(e) => return Err(format!("Failed to extract tensor: {:?}", e)),
-        };
-        debug!("embeddings tensors: {:?}", embeddings_tensor);
-        Ok("Predicted successfully".to_string())
-
-        // let embeddings = outputs[1].try_extract_tensor::<f32>()?.into_dimensionality::<Ix2>().unwrap();
-    }
-
-    async fn load_model(&mut self, model_path: &str) -> Result<(), Error> {
-        let model_source_path = Path::new(model_path);
-        ort::init()
-            .with_name("embedder")
-            .with_execution_providers([CPUExecutionProvider::default().build()])
-            .commit()
-            .expect("Failed to initialize ORT environment");
-
-        let session = Session::builder()
-            .unwrap()
-            .with_optimization_level(GraphOptimizationLevel::Level3)
-            .unwrap()
-            .with_intra_threads(8)
-            .unwrap()
-            .commit_from_file(Path::join(model_source_path, "model.onnx"))
+        let embeddings_tensor = outputs[1]
+            .try_extract_tensor::<f16>()?
+            .into_dimensionality::<Ix2>()
             .unwrap();
 
-        let mut tokenizer =
-            Tokenizer::from_file(Path::join(model_source_path, "tokenizer.json")).unwrap();
-        tokenizer.with_padding(Some(PaddingParams {
-            strategy: tokenizers::PaddingStrategy::BatchLongest,
-            pad_to_multiple_of: None,
-            pad_id: 0,
-            pad_type_id: 0,
-            direction: tokenizers::PaddingDirection::Right,
-            pad_token: "<PAD>".into(),
-        }));
-
-        self.model = Some(session);
-        self.tokenizer = Some(tokenizer);
-        Ok(())
+        debug!("embeddings tensors: {:?}", embeddings_tensor);
+        Ok(Arc::new(embeddings_tensor.to_owned()))
     }
 
-    async fn unload_model(&self) -> Result<(), String> {
-        //Unload model
-        Ok(())
+    async fn output_dtype(&self) -> ModelOutputDType {
+        self.output_dtype.as_ref().unwrap().clone()
     }
 }
