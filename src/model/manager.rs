@@ -1,4 +1,4 @@
-use super::model_traits::{Backend, ModelOutputDType, ONNXModel};
+use super::model_utils::{Backend, ModelOutputDType, ONNXModel};
 use crate::model::backends::onnx::bert_onnx::BertONNX;
 use anyhow::Error;
 use half::f16;

@@ -1,4 +1,4 @@
-use crate::model::model_traits::{ModelOutputDType, ModelTrait, ONNXModelTrait};
+use crate::model::model_utils::{ModelOutputDType, ModelTrait, ONNXModelTrait};
 use anyhow;
 use async_trait::async_trait;
 use half::f16;

@@ -1,5 +1,5 @@
 use crate::model::manager::ModelManager;
-use crate::model::model_traits::ModelOutputDType;
+use crate::model::model_utils::ModelOutputDType;
 use anyhow;
 use duckdb::arrow::array::StringArray;
 use duckdb::arrow::record_batch::RecordBatch;

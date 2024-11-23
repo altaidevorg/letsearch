@@ -1,9 +1,6 @@
-mod collection;
-mod model;
-mod serve;
 use crate::collection::Collection;
 use crate::model::manager::ModelManager;
-use crate::model::model_traits::Backend;
+use crate::model::model_utils::Backend;
 use crate::serve::run_server;
 use anyhow;
 use chrono;
@@ -116,3 +113,7 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+mod collection;
+mod model;
+mod serve;
