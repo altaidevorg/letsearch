@@ -2,7 +2,7 @@ use crate::model::model_utils::{ModelOutputDType, ModelTrait, ONNXModelTrait};
 use anyhow;
 use async_trait::async_trait;
 use half::f16;
-use log::debug;
+use log::info;
 use ndarray::{Array2, Ix2};
 use ort::{CPUExecutionProvider, GraphOptimizationLevel, Session};
 use std::sync::Arc;
@@ -98,7 +98,7 @@ impl ONNXModelTrait for BertONNX {
 
         // Run the model.
         let outputs = model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap();
-        println!("actual inference took: {:?}", start.elapsed());
+        info!("actual inference took: {:?}", start.elapsed());
 
         // Extract embeddings tensor.
         let embeddings_tensor = outputs[1]
