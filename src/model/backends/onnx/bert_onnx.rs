@@ -1,6 +1,5 @@
-use crate::model::traits::onnx_trait::ONNXModelTrait;
-use crate::model::traits::{model_trait::ModelTrait, ModelOutputDType};
-use anyhow::Error;
+use crate::model::model_traits::{ModelOutputDType, ModelTrait, ONNXModelTrait};
+use anyhow;
 use async_trait::async_trait;
 use half::f16;
 use log::debug;
@@ -29,7 +28,7 @@ impl BertONNX {
 
 #[async_trait]
 impl ModelTrait for BertONNX {
-    async fn load_model(&mut self, model_path: &str) -> Result<(), Error> {
+    async fn load_model(&mut self, model_path: &str) -> anyhow::Result<()> {
         let model_source_path = Path::new(model_path);
         ort::init()
             .with_name("onnx_model")

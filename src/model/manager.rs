@@ -1,7 +1,5 @@
-use super::traits::onnx_trait::ONNXModel;
-use super::traits::ModelOutputDType;
+use super::model_traits::{Backend, ModelOutputDType, ONNXModel};
 use crate::model::backends::onnx::bert_onnx::BertONNX;
-use crate::model::traits::Backend;
 use anyhow::Error;
 use half::f16;
 use ndarray::Array2;
@@ -22,7 +20,7 @@ impl ModelManager {
         }
     }
 
-    pub async fn load_model(&self, model_path: String, model_type: Backend) -> Result<u32, Error> {
+    pub async fn load_model(&self, model_path: String, model_type: Backend) -> anyhow::Result<u32> {
         let model: Arc<RwLock<dyn ONNXModel>> = match model_type {
             Backend::ONNX => Arc::new(RwLock::new(BertONNX::new())),
             // _ => unreachable!("not implemented"),

@@ -1,3 +1,5 @@
+use crate::model::manager::ModelManager;
+use crate::model::model_traits::ModelOutputDType;
 use anyhow;
 use duckdb::arrow::array::StringArray;
 use duckdb::arrow::record_batch::RecordBatch;
@@ -7,7 +9,6 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-use crate::model::manager::ModelManager;
 pub struct Collection {
     name: String,
     conn: Connection,
@@ -103,9 +104,9 @@ impl Collection {
         let start = Instant::now();
         let inputs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         let output_dtype = model_manager.output_dtype(model_id).await;
-        let embeddings = match output_dtype {
-            f16 => model_manager.predict_f16(model_id, inputs).await.unwrap(),
-            _ => unreachable!("not yet implemene"),
+        let _embeddings = match output_dtype {
+            ModelOutputDType::F16 => model_manager.predict_f16(model_id, inputs).await.unwrap(),
+            _ => unreachable!("not yet implemended"),
         };
         info!("Embedding texts took: {:?}", start.elapsed());
         Ok(())
