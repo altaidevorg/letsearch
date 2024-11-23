@@ -21,7 +21,7 @@ pub enum ModelOutputDType {
 pub trait ModelTrait {
     async fn load_model(&mut self, model_path: &str) -> anyhow::Result<()>;
     #[allow(dead_code)]
-    async fn unload_model(&self) -> Result<(), String>;
+    async fn unload_model(&self) -> anyhow::Result<()>;
 }
 
 #[async_trait]

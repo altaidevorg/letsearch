@@ -5,9 +5,9 @@ use half::f16;
 use log::debug;
 use ndarray::{Array2, Ix2};
 use ort::{CPUExecutionProvider, GraphOptimizationLevel, Session};
-use std::path::Path;
 use std::sync::Arc;
 use std::thread::available_parallelism;
+use std::{path::Path, time::Instant};
 use tokenizers::{PaddingParams, Tokenizer};
 
 pub struct BertONNX {
@@ -63,7 +63,7 @@ impl ModelTrait for BertONNX {
         Ok(())
     }
 
-    async fn unload_model(&self) -> Result<(), String> {
+    async fn unload_model(&self) -> anyhow::Result<()> {
         //Unload model
         Ok(())
     }
@@ -94,8 +94,11 @@ impl ONNXModelTrait for BertONNX {
         let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).unwrap();
         let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask).unwrap();
 
+        let start = Instant::now();
+
         // Run the model.
         let outputs = model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap();
+        println!("actual inference took: {:?}", start.elapsed());
 
         // Extract embeddings tensor.
         let embeddings_tensor = outputs[1]
@@ -103,7 +106,6 @@ impl ONNXModelTrait for BertONNX {
             .into_dimensionality::<Ix2>()
             .unwrap();
 
-        debug!("embeddings tensors: {:?}", embeddings_tensor);
         Ok(Arc::new(embeddings_tensor.to_owned()))
     }
 
