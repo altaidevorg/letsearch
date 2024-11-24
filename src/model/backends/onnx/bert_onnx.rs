@@ -72,14 +72,23 @@ impl ModelTrait for BertONNX {
 #[async_trait]
 impl ONNXModelTrait for BertONNX {
     async fn predict_f16(&self, texts: Vec<&str>) -> anyhow::Result<Arc<Array2<f16>>> {
-        let inputs: Vec<String> = texts.into_iter().map(|s| s.to_string()).collect();
+        let inputs: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
 
         // Encode input strings.
         let model = self.model.as_ref().unwrap();
-
         let tokenizer = self.tokenizer.as_ref().unwrap();
+
+        // tokenize inputs
         let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
         let padded_token_length = encodings[0].len();
+
+        let tti_name = "token_type_ids";
+        let needs_token_type_ids = model
+            .inputs
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect::<Vec<&str>>()
+            .contains(&tti_name);
 
         // Extract token IDs and attention masks
         let ids: Vec<i64> = encodings
@@ -90,14 +99,25 @@ impl ONNXModelTrait for BertONNX {
             .iter()
             .flat_map(|e| e.get_attention_mask().iter().map(|i| *i as i64))
             .collect();
-
         let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).unwrap();
         let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask).unwrap();
 
-        let start = Instant::now();
-
         // Run the model.
-        let outputs = model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap();
+        let start = Instant::now();
+        let outputs = if needs_token_type_ids {
+            let t_ids = encodings
+                .iter()
+                .flat_map(|e| e.get_type_ids().iter().map(|i| *i as i64))
+                .collect();
+            let a_t_ids =
+                Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids).unwrap();
+            model
+                .run(ort::inputs![a_ids, a_t_ids, a_mask].unwrap())
+                .unwrap()
+        } else {
+            model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap()
+        };
+
         info!("actual inference took: {:?}", start.elapsed());
 
         // Extract embeddings tensor.
