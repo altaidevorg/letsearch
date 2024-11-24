@@ -88,7 +88,7 @@ impl Collection {
         Ok(col_values)
     }
 
-    pub async fn embed_column(
+    pub async fn embed_column_with_offset(
         &self,
         column_name: &str,
         batch_size: u32,
@@ -109,6 +109,31 @@ impl Collection {
             _ => unreachable!("not yet implemended"),
         };
         info!("Embedding texts took: {:?}", start.elapsed());
+        Ok(())
+    }
+
+    pub async fn embed_column(
+        &self,
+        column_name: &str,
+        batch_size: u32,
+        model_manager: &ModelManager,
+        model_id: u32,
+    ) -> anyhow::Result<()> {
+        let num_batches = 1024 / batch_size;
+        let start = Instant::now();
+        for batch in 0..num_batches {
+            self.embed_column_with_offset(
+                column_name,
+                batch_size,
+                batch * batch_size,
+                model_manager,
+                model_id,
+            )
+            .await
+            .unwrap();
+        }
+        info!("Total duration: {:?}", start.elapsed());
+
         Ok(())
     }
 }

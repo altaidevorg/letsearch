@@ -37,8 +37,12 @@ enum Commands {
         collection_name: String,
 
         /// Model to create embeddings
-        #[arg(short, long, default_value = "bge-m3")]
+        #[arg(short, long, default_value = "minilm")]
         model: String,
+
+        /// batch size when embedding texts
+        #[arg(short, long, default_value = "16")]
+        batch_size: u32,
 
         /// columns to embed and index for vector search
         #[arg(short, long, action = clap::ArgAction::Append)]
@@ -84,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
             files,
             collection_name,
             model,
+            batch_size,
             index_columns,
             overwrite,
         } => {
@@ -101,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap();
             info!("model successfully loaded from {model}");
             let _ = collection
-                .embed_column("user", 2, 0, &model_manager, model_id)
+                .embed_column("user", batch_size.to_owned(), &model_manager, model_id)
                 .await
                 .unwrap();
         }
