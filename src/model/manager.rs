@@ -74,25 +74,28 @@ impl ModelManager {
     }
 
     pub async fn predict(&self, model_id: u32, texts: Vec<&str>) -> anyhow::Result<Embeddings> {
-        match self.output_dtype(model_id).await {
+        let output_dtype = self.output_dtype(model_id).await?;
+        match output_dtype {
             ModelOutputDType::F16 => Ok(Embeddings::F16(
                 self.predict_f16(model_id, texts).await.unwrap().to_owned(),
             )),
             ModelOutputDType::F32 => Ok(Embeddings::F32(
                 self.predict_f32(model_id, texts).await.unwrap().to_owned(),
             )),
-            _ => unreachable!("not yet implemented"),
+            ModelOutputDType::Int8 => {
+                unimplemented!("int8 dynamic quantization not yt implemented")
+            }
         }
     }
 
-    pub async fn output_dtype(&self, model_id: u32) -> ModelOutputDType {
+    pub async fn output_dtype(&self, model_id: u32) -> anyhow::Result<ModelOutputDType> {
         let models = self.models.read().await;
         match models.get(&model_id) {
             Some(model) => {
                 let model_guard = model.read().await; // Lock the RwLock for reading
                 model_guard.output_dtype().await
             }
-            None => unreachable!("this will never hit"),
+            None => Err(Error::msg("Model not loaded")),
         }
     }
 }

@@ -1,5 +1,5 @@
 use crate::model::model_utils::{ModelOutputDType, ModelTrait, ONNXModelTrait};
-use anyhow;
+use anyhow::Error;
 use async_trait::async_trait;
 use half::f16;
 use log::{debug, info};
@@ -66,7 +66,7 @@ impl ModelTrait for BertONNX {
             .tensor_type()
             .unwrap()
             .to_string();
-        info!("output dtype: {:?}", dtype);
+        info!("Model output dtype: {:?}", dtype);
         self.output_dtype = match dtype.as_str() {
             "f16" => Some(ModelOutputDType::F16),
             "f32" => Some(ModelOutputDType::F32),
@@ -197,7 +197,10 @@ impl ONNXModelTrait for BertONNX {
         Ok(Arc::new(embeddings_tensor.to_owned()))
     }
 
-    async fn output_dtype(&self) -> ModelOutputDType {
-        self.output_dtype.as_ref().unwrap().clone()
+    async fn output_dtype(&self) -> anyhow::Result<ModelOutputDType> {
+        match self.output_dtype.clone() {
+            Some(dtype) => Ok(dtype),
+            None => Err(Error::msg("model not loaded")),
+        }
     }
 }
