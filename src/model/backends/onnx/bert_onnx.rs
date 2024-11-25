@@ -2,9 +2,10 @@ use crate::model::model_utils::{ModelOutputDType, ModelTrait, ONNXModelTrait};
 use anyhow;
 use async_trait::async_trait;
 use half::f16;
-use log::info;
+use log::{debug, info};
 use ndarray::{Array2, Ix2};
 use ort::{CPUExecutionProvider, GraphOptimizationLevel, Session};
+use rayon::prelude::*;
 use std::sync::Arc;
 use std::thread::available_parallelism;
 use std::{path::Path, time::Instant};
@@ -14,6 +15,7 @@ pub struct BertONNX {
     pub model: Option<Session>,
     pub tokenizer: Option<Tokenizer>,
     output_dtype: Option<ModelOutputDType>,
+    needs_token_type_ids: Option<bool>,
 }
 
 impl BertONNX {
@@ -22,6 +24,7 @@ impl BertONNX {
             tokenizer: None,
             model: None,
             output_dtype: None,
+            needs_token_type_ids: None,
         }
     }
 }
@@ -57,9 +60,32 @@ impl ModelTrait for BertONNX {
             pad_token: "<pad>".into(),
         }));
 
+        // determine output dtype
+        let dtype = session.outputs[0]
+            .output_type
+            .tensor_type()
+            .unwrap()
+            .to_string();
+        info!("output dtype: {:?}", dtype);
+        self.output_dtype = match dtype.as_str() {
+            "f16" => Some(ModelOutputDType::F16),
+            "f32" => Some(ModelOutputDType::F32),
+            _ => None,
+        };
+
+        // determine if the models needs token_type_ids
+        let tti_name = "token_type_ids";
+        let needs_token_type_ids = session
+            .inputs
+            .par_iter()
+            .map(|i| i.name.as_str())
+            .collect::<Vec<&str>>()
+            .contains(&tti_name);
+        self.needs_token_type_ids = Some(needs_token_type_ids);
+
         self.model = Some(session);
         self.tokenizer = Some(tokenizer);
-        self.output_dtype = Some(ModelOutputDType::F16); //hardcoded for now
+
         Ok(())
     }
 
@@ -82,13 +108,55 @@ impl ONNXModelTrait for BertONNX {
         let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
         let padded_token_length = encodings[0].len();
 
-        let tti_name = "token_type_ids";
-        let needs_token_type_ids = model
-            .inputs
+        // Extract token IDs and attention masks
+        let ids: Vec<i64> = encodings
             .iter()
-            .map(|i| i.name.as_str())
-            .collect::<Vec<&str>>()
-            .contains(&tti_name);
+            .flat_map(|e| e.get_ids().iter().map(|i| *i as i64))
+            .collect();
+        let mask: Vec<i64> = encodings
+            .iter()
+            .flat_map(|e| e.get_attention_mask().iter().map(|i| *i as i64))
+            .collect();
+        let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).unwrap();
+        let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask).unwrap();
+
+        // Run the model.
+        let start = Instant::now();
+        let outputs = if self.needs_token_type_ids.unwrap() {
+            let t_ids = encodings
+                .iter()
+                .flat_map(|e| e.get_type_ids().iter().map(|i| *i as i64))
+                .collect();
+            let a_t_ids =
+                Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids).unwrap();
+            model
+                .run(ort::inputs![a_ids, a_t_ids, a_mask].unwrap())
+                .unwrap()
+        } else {
+            model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap()
+        };
+
+        debug!("actual inference took: {:?}", start.elapsed());
+
+        // Extract embeddings tensor.
+        let embeddings_tensor = outputs[1]
+            .try_extract_tensor::<f16>()?
+            .into_dimensionality::<Ix2>()
+            .unwrap();
+
+        Ok(Arc::new(embeddings_tensor.to_owned()))
+    }
+
+    async fn predict_f32(&self, texts: Vec<&str>) -> anyhow::Result<Arc<Array2<f32>>> {
+        let inputs: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+
+        // Encode input strings.
+        let model = self.model.as_ref().unwrap();
+        let tokenizer = self.tokenizer.as_ref().unwrap();
+
+        // tokenize inputs
+        let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
+        let padded_token_length = encodings[0].len();
 
         // Extract token IDs and attention masks
         let ids: Vec<i64> = encodings
@@ -104,7 +172,7 @@ impl ONNXModelTrait for BertONNX {
 
         // Run the model.
         let start = Instant::now();
-        let outputs = if needs_token_type_ids {
+        let outputs = if self.needs_token_type_ids.unwrap() {
             let t_ids = encodings
                 .iter()
                 .flat_map(|e| e.get_type_ids().iter().map(|i| *i as i64))
@@ -118,11 +186,11 @@ impl ONNXModelTrait for BertONNX {
             model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap()
         };
 
-        info!("actual inference took: {:?}", start.elapsed());
+        debug!("actual inference took: {:?}", start.elapsed());
 
         // Extract embeddings tensor.
         let embeddings_tensor = outputs[1]
-            .try_extract_tensor::<f16>()?
+            .try_extract_tensor::<f32>()?
             .into_dimensionality::<Ix2>()
             .unwrap();
 

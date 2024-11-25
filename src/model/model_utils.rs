@@ -8,13 +8,17 @@ pub enum Backend {
     ONNX,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum ModelOutputDType {
-    #[allow(dead_code)]
     F32,
     F16,
     #[allow(dead_code)]
     Int8,
+}
+
+pub enum Embeddings {
+    F16(Arc<Array2<f16>>),
+    F32(Arc<Array2<f32>>),
 }
 
 #[async_trait]
@@ -28,6 +32,7 @@ pub trait ModelTrait {
 pub trait ONNXModelTrait: ModelTrait {
     async fn output_dtype(&self) -> ModelOutputDType;
     async fn predict_f16(&self, texts: Vec<&str>) -> anyhow::Result<Arc<Array2<f16>>>;
+    async fn predict_f32(&self, texts: Vec<&str>) -> anyhow::Result<Arc<Array2<f32>>>;
 
     #[allow(dead_code)]
     fn backend(&self) -> Backend {

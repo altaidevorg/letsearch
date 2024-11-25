@@ -1,5 +1,5 @@
 use crate::model::manager::ModelManager;
-use crate::model::model_utils::ModelOutputDType;
+use crate::model::model_utils::Embeddings;
 use anyhow;
 use duckdb::arrow::array::StringArray;
 use duckdb::arrow::record_batch::RecordBatch;
@@ -100,14 +100,15 @@ impl Collection {
         let texts = self
             .get_single_column(column_name, batch_size, offset)
             .unwrap();
-        info!("getting texts from DB took: {:?}", start.elapsed());
+        debug!("getting texts from DB took: {:?}", start.elapsed());
         let start = Instant::now();
         let inputs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let output_dtype = model_manager.output_dtype(model_id).await;
-        let _embeddings = match output_dtype {
-            ModelOutputDType::F16 => model_manager.predict_f16(model_id, inputs).await.unwrap(),
-            _ => unreachable!("not yet implemended"),
-        };
+        let embeddings = model_manager.predict(model_id, inputs).await.unwrap();
+        match embeddings {
+            Embeddings::F16(emb) => debug!("output shape: {:?}", emb.dim()),
+            Embeddings::F32(emb) => debug!("output shape: {:?}", emb.dim()),
+        }
+
         info!("Embedding texts took: {:?}", start.elapsed());
         Ok(())
     }
@@ -132,6 +133,7 @@ impl Collection {
             .await
             .unwrap();
         }
+
         info!("Total duration: {:?}", start.elapsed());
 
         Ok(())

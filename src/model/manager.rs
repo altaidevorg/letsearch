@@ -1,4 +1,4 @@
-use super::model_utils::{Backend, ModelOutputDType, ONNXModel};
+use super::model_utils::{Backend, Embeddings, ModelOutputDType, ONNXModel};
 use crate::model::backends::onnx::bert_onnx::BertONNX;
 use anyhow::Error;
 use half::f16;
@@ -6,7 +6,6 @@ use ndarray::Array2;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
 pub struct ModelManager {
     models: RwLock<HashMap<u32, Arc<RwLock<dyn ONNXModel>>>>,
     next_id: RwLock<u32>,
@@ -56,6 +55,33 @@ impl ModelManager {
                 Ok(model_guard.predict_f16(texts).await?)
             }
             None => Err(Error::msg("Model not found")),
+        }
+    }
+
+    pub async fn predict_f32(
+        &self,
+        model_id: u32,
+        texts: Vec<&str>,
+    ) -> anyhow::Result<Arc<Array2<f32>>> {
+        let models = self.models.read().await;
+        match models.get(&model_id) {
+            Some(model) => {
+                let model_guard = model.read().await; // Lock the RwLock for reading
+                Ok(model_guard.predict_f32(texts).await?)
+            }
+            None => Err(Error::msg("Model not found")),
+        }
+    }
+
+    pub async fn predict(&self, model_id: u32, texts: Vec<&str>) -> anyhow::Result<Embeddings> {
+        match self.output_dtype(model_id).await {
+            ModelOutputDType::F16 => Ok(Embeddings::F16(
+                self.predict_f16(model_id, texts).await.unwrap().to_owned(),
+            )),
+            ModelOutputDType::F32 => Ok(Embeddings::F32(
+                self.predict_f32(model_id, texts).await.unwrap().to_owned(),
+            )),
+            _ => unreachable!("not yet implemented"),
         }
     }
 
