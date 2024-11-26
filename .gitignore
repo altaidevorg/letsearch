@@ -1,3 +1,5 @@
 /target
 *.db
 *.dll
+*.bin
+test1/

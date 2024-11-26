@@ -9,7 +9,7 @@ anyhow = "1.0.93"
 async-trait = "0.1.83"
 clap = { version = "4.5.21", features = ["derive"] }
 duckdb = { version = "1.1.1", features = ["bundled"] }
-ort = {version = "2.0.0-rc.8", features = ["ndarray", "half"]}
+ort = {version = "2.0.0-rc.8", features = ["ndarray", "half",]}
 half = {version = "2.1"}
 ndarray = {version = "0.16"}
 tokenizers = "0.20.3"
@@ -20,6 +20,7 @@ serde = { version = "1.0.215", features = ["derive"] }
 serde_json = "1.0.133"
 chrono = "0.4.38"
 rayon = "1.10.0"
+usearch = "2.16.6"
 
 [target.'cfg(windows)'.dependencies]
 ort = { version = "2.0.0-rc.8", features = ["load-dynamic", "ndarray", "half"]}
