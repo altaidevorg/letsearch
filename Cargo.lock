@@ -1010,28 +1010,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "duckdb-test"
-version = "0.1.0"
-dependencies = [
- "actix-web",
- "anyhow",
- "async-trait",
- "chrono",
- "clap",
- "duckdb",
- "env_logger",
- "half",
- "log",
- "ndarray",
- "ort",
- "rayon",
- "serde",
- "serde_json",
- "tokenizers",
- "tokio",
-]
-
-[[package]]
 name = "either"
 version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1578,6 +1556,28 @@ name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+
+[[package]]
+name = "letsearch"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "duckdb",
+ "env_logger",
+ "half",
+ "log",
+ "ndarray",
+ "ort",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tokenizers",
+ "tokio",
+]
 
 [[package]]
 name = "lexical-core"

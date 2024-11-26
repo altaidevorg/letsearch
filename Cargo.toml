@@ -1,5 +1,5 @@
 [package]
-name = "duckdb-test"
+name = "letsearch"
 version = "0.1.0"
 edition = "2021"
 
