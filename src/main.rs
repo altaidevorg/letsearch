@@ -42,7 +42,7 @@ enum Commands {
 
         /// batch size when embedding texts
         #[arg(short, long, default_value = "32")]
-        batch_size: u32,
+        batch_size: u64,
 
         /// columns to embed and index for vector search
         #[arg(short, long, action = clap::ArgAction::Append)]

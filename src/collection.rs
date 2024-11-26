@@ -54,8 +54,8 @@ impl Collection {
     pub fn get_single_column(
         &self,
         column_name: &str,
-        batch_size: u32,
-        offset: u32,
+        batch_size: u64,
+        offset: u64,
     ) -> anyhow::Result<Vec<String>> {
         assert!(batch_size >= 1);
         let mut stmt = self.conn.prepare(
@@ -95,8 +95,8 @@ impl Collection {
     pub async fn embed_column_with_offset(
         &mut self,
         column_name: &str,
-        batch_size: u32,
-        offset: u32,
+        batch_size: u64,
+        offset: u64,
         model_manager: &ModelManager,
         model_id: u32,
     ) -> anyhow::Result<()> {
@@ -130,8 +130,10 @@ impl Collection {
         match embeddings {
             Embeddings::F16(emb) => debug!("output shape: {:?}", emb.dim()),
             Embeddings::F32(emb) => {
-                let ids: Vec<_> = (offset..offset + batch_size).map(|i| i as u64).collect();
-                index.add(&ids, emb.as_ptr());
+                let (num_vectors, vector_dim) = emb.dim();
+                let ids: Vec<_> = (offset..offset + num_vectors as u64).collect();
+                index.add(&ids, emb.as_ptr(), vector_dim).unwrap();
+
                 debug!("output shape: {:?}", emb.dim());
             }
         }
@@ -143,7 +145,7 @@ impl Collection {
     pub async fn embed_column(
         &mut self,
         column_name: &str,
-        batch_size: u32,
+        batch_size: u64,
         model_manager: &ModelManager,
         model_id: u32,
     ) -> anyhow::Result<()> {

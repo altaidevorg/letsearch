@@ -1,7 +1,7 @@
 use anyhow;
 use log::debug;
-use std::fs;
 use std::path::Path;
+use std::{fs, u64, usize};
 use usearch::{new_index, Index, IndexOptions};
 
 pub struct VectorIndex {
@@ -46,11 +46,16 @@ impl VectorIndex {
         Ok(())
     }
 
-    pub fn add(&self, keys: &Vec<u64>, vectors: *const f32) -> anyhow::Result<()> {
+    pub fn add(
+        &self,
+        keys: &Vec<u64>,
+        vectors: *const f32,
+        vector_dim: usize,
+    ) -> anyhow::Result<()> {
         let index = self.index.as_ref().unwrap();
         keys.iter().enumerate().for_each(|(i, _key)| {
-            let vector_offset = unsafe { vectors.add(i * 384) };
-            let vector: &[f32] = unsafe { std::slice::from_raw_parts(vector_offset, 384) };
+            let vector_offset = unsafe { vectors.add(i * vector_dim) };
+            let vector: &[f32] = unsafe { std::slice::from_raw_parts(vector_offset, vector_dim) };
             index.add(keys[i], vector).unwrap();
         });
 
