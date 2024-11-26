@@ -95,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
             if !index_columns.is_empty() {
                 info!("index columns: {:?}", index_columns);
             }
-            let collection =
+            let mut collection =
                 Collection::new(collection_name.to_string(), overwrite.to_owned()).unwrap();
             let jsonl_path = &files[0];
             collection.import_jsonl(jsonl_path)?;
@@ -122,3 +122,4 @@ async fn main() -> anyhow::Result<()> {
 mod collection;
 mod model;
 mod serve;
+mod vector_index;

@@ -1,5 +1,6 @@
 use crate::model::manager::ModelManager;
 use crate::model::model_utils::Embeddings;
+use crate::vector_index::VectorIndex;
 use anyhow;
 use duckdb::arrow::array::StringArray;
 use duckdb::arrow::record_batch::RecordBatch;
@@ -8,10 +9,12 @@ use log::{debug, info};
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
+use usearch::{IndexOptions, MetricKind, ScalarKind};
 
 pub struct Collection {
     name: String,
     conn: Connection,
+    vector_index: Option<VectorIndex>,
 }
 
 impl Collection {
@@ -31,6 +34,7 @@ impl Collection {
         Ok(Collection {
             name: name,
             conn: conn,
+            vector_index: None,
         })
     }
 
@@ -89,7 +93,7 @@ impl Collection {
     }
 
     pub async fn embed_column_with_offset(
-        &self,
+        &mut self,
         column_name: &str,
         batch_size: u32,
         offset: u32,
@@ -104,9 +108,32 @@ impl Collection {
         let start = Instant::now();
         let inputs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         let embeddings = model_manager.predict(model_id, inputs).await.unwrap();
+
+        let index = self.vector_index.get_or_insert_with(|| {
+            let index_path = String::from("test1/index");
+            let options = IndexOptions {
+                dimensions: 384,
+                metric: MetricKind::Cos,
+                quantization: ScalarKind::F32,
+                connectivity: 0,
+                expansion_add: 0,
+                expansion_search: 0,
+                multi: true,
+            };
+            let mut index = VectorIndex::new(index_path, true).unwrap();
+            index.with_options(&options, 20000).unwrap();
+            index
+        });
+
+        index.save()?;
+
         match embeddings {
             Embeddings::F16(emb) => debug!("output shape: {:?}", emb.dim()),
-            Embeddings::F32(emb) => debug!("output shape: {:?}", emb.dim()),
+            Embeddings::F32(emb) => {
+                let ids: Vec<_> = (offset..offset + batch_size).map(|i| i as u64).collect();
+                index.add(&ids, emb.as_ptr());
+                debug!("output shape: {:?}", emb.dim());
+            }
         }
 
         info!("Embedding texts took: {:?}", start.elapsed());
@@ -114,13 +141,14 @@ impl Collection {
     }
 
     pub async fn embed_column(
-        &self,
+        &mut self,
         column_name: &str,
         batch_size: u32,
         model_manager: &ModelManager,
         model_id: u32,
     ) -> anyhow::Result<()> {
         let num_batches = 2048 / batch_size;
+
         let start = Instant::now();
         for batch in 0..num_batches {
             self.embed_column_with_offset(
@@ -133,6 +161,7 @@ impl Collection {
             .await
             .unwrap();
         }
+        self.vector_index.as_ref().unwrap().save().unwrap();
 
         info!("Total duration: {:?}", start.elapsed());
 
