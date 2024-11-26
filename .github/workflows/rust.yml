@@ -1,0 +1,39 @@
+name: Rust Release
+
+on:
+  push:
+    tags:
+      - "v*"  # Match tags starting with "v"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build and Release Binaries
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        target: [x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc]
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Install Rust Toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+
+    - name: Install Target
+      run: rustup target add ${{ matrix.target }}
+
+    - name: Build Binary
+      run: cargo build --release --target ${{ matrix.target }}
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ matrix.os }}-binary
+        path: target/${{ matrix.target }}/release/your_binary_name
