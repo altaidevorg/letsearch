@@ -28,8 +28,9 @@ jobs:
     - name: Build Binary
       run: cargo build --release
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v3
+    - name: Upload to GitHub Releases
+      uses: ncipollo/release-action@v1
       with:
-        name: ${{ matrix.os }}-binary
-        path: target/release/
+        artifacts: target/release/letsearch
+        token: ${{ secrets.GITHUB_TOKEN }}
+        tag: ${{ github.ref_name }}
