@@ -41,7 +41,7 @@ enum Commands {
         model: String,
 
         /// batch size when embedding texts
-        #[arg(short, long, default_value = "16")]
+        #[arg(short, long, default_value = "32")]
         batch_size: u32,
 
         /// columns to embed and index for vector search

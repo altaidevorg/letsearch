@@ -120,7 +120,7 @@ impl Collection {
         model_manager: &ModelManager,
         model_id: u32,
     ) -> anyhow::Result<()> {
-        let num_batches = 1024 / batch_size;
+        let num_batches = 2048 / batch_size;
         let start = Instant::now();
         for batch in 0..num_batches {
             self.embed_column_with_offset(

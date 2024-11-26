@@ -101,7 +101,7 @@ impl ONNXModelTrait for BertONNX {
         let output_dtype = self.output_dtype().await?;
         assert_eq!(output_dtype, ModelOutputDType::F16);
 
-        let inputs: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+        let inputs: Vec<String> = texts.par_iter().map(|s| s.to_string()).collect();
 
         // Encode input strings.
         let model = self.model.as_ref().unwrap();
@@ -113,12 +113,12 @@ impl ONNXModelTrait for BertONNX {
 
         // Extract token IDs and attention masks
         let ids: Vec<i64> = encodings
-            .iter()
-            .flat_map(|e| e.get_ids().iter().map(|i| *i as i64))
+            .par_iter()
+            .flat_map_iter(|e| e.get_ids().iter().map(|i| *i as i64))
             .collect();
         let mask: Vec<i64> = encodings
-            .iter()
-            .flat_map(|e| e.get_attention_mask().iter().map(|i| *i as i64))
+            .par_iter()
+            .flat_map_iter(|e| e.get_attention_mask().iter().map(|i| *i as i64))
             .collect();
         let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).unwrap();
         let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask).unwrap();
@@ -127,8 +127,8 @@ impl ONNXModelTrait for BertONNX {
         let start = Instant::now();
         let outputs = if self.needs_token_type_ids.unwrap() {
             let t_ids = encodings
-                .iter()
-                .flat_map(|e| e.get_type_ids().iter().map(|i| *i as i64))
+                .par_iter()
+                .flat_map_iter(|e| e.get_type_ids().iter().map(|i| *i as i64))
                 .collect();
             let a_t_ids =
                 Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids).unwrap();
@@ -154,7 +154,7 @@ impl ONNXModelTrait for BertONNX {
         let output_dtype = self.output_dtype().await?;
         assert_eq!(output_dtype, ModelOutputDType::F32);
 
-        let inputs: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+        let inputs: Vec<String> = texts.par_iter().map(|s| s.to_string()).collect();
 
         // Encode input strings.
         let model = self.model.as_ref().unwrap();
@@ -166,12 +166,12 @@ impl ONNXModelTrait for BertONNX {
 
         // Extract token IDs and attention masks
         let ids: Vec<i64> = encodings
-            .iter()
-            .flat_map(|e| e.get_ids().iter().map(|i| *i as i64))
+            .par_iter()
+            .flat_map_iter(|e| e.get_ids().iter().map(|i| *i as i64))
             .collect();
         let mask: Vec<i64> = encodings
-            .iter()
-            .flat_map(|e| e.get_attention_mask().iter().map(|i| *i as i64))
+            .par_iter()
+            .flat_map_iter(|e| e.get_attention_mask().iter().map(|i| *i as i64))
             .collect();
         let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).unwrap();
         let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask).unwrap();
@@ -180,8 +180,8 @@ impl ONNXModelTrait for BertONNX {
         let start = Instant::now();
         let outputs = if self.needs_token_type_ids.unwrap() {
             let t_ids = encodings
-                .iter()
-                .flat_map(|e| e.get_type_ids().iter().map(|i| *i as i64))
+                .par_iter()
+                .flat_map_iter(|e| e.get_type_ids().iter().map(|i| *i as i64))
                 .collect();
             let a_t_ids =
                 Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids).unwrap();
@@ -192,7 +192,7 @@ impl ONNXModelTrait for BertONNX {
             model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap()
         };
 
-        debug!("actual inference took: {:?}", start.elapsed());
+        info!("actual inference took: {:?}", start.elapsed());
 
         // Extract embeddings tensor.
         let embeddings_tensor = outputs[1]
