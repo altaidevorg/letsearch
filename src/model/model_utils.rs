@@ -8,7 +8,7 @@ pub enum Backend {
     ONNX,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ModelOutputDType {
     F32,
     F16,

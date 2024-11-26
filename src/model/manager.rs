@@ -83,7 +83,7 @@ impl ModelManager {
                 self.predict_f32(model_id, texts).await.unwrap().to_owned(),
             )),
             ModelOutputDType::Int8 => {
-                unimplemented!("int8 dynamic quantization not yt implemented")
+                unimplemented!("int8 dynamic quantization not yet implemented")
             }
         }
     }

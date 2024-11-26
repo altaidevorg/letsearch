@@ -98,6 +98,9 @@ impl ModelTrait for BertONNX {
 #[async_trait]
 impl ONNXModelTrait for BertONNX {
     async fn predict_f16(&self, texts: Vec<&str>) -> anyhow::Result<Arc<Array2<f16>>> {
+        let output_dtype = self.output_dtype().await?;
+        assert_eq!(output_dtype, ModelOutputDType::F16);
+
         let inputs: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
 
         // Encode input strings.
@@ -148,6 +151,9 @@ impl ONNXModelTrait for BertONNX {
     }
 
     async fn predict_f32(&self, texts: Vec<&str>) -> anyhow::Result<Arc<Array2<f32>>> {
+        let output_dtype = self.output_dtype().await?;
+        assert_eq!(output_dtype, ModelOutputDType::F32);
+
         let inputs: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
 
         // Encode input strings.
