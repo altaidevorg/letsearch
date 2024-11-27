@@ -1,17 +1,8 @@
 use anyhow;
 use log::debug;
-use rayon::prelude::*;
-use std::marker::PhantomData;
 use std::path::Path;
-use std::sync::Arc;
 use std::{fs, u64, usize};
 use usearch::{new_index, Index, IndexOptions};
-
-// Safe wrapper for *const f32
-struct SharedPointer(*const f32, PhantomData<*const f32>);
-
-unsafe impl Send for SharedPointer {}
-unsafe impl Sync for SharedPointer {}
 
 pub struct VectorIndex {
     pub index: Option<Index>,
@@ -62,10 +53,8 @@ impl VectorIndex {
         vector_dim: usize,
     ) -> anyhow::Result<()> {
         let index = self.index.as_ref().unwrap();
-        let shared_ptr = vectors as usize;
-        keys.par_iter().enumerate().for_each(|(i, _key)| {
-            let ptr: *const f32 = shared_ptr as *const f32;
-            let vector_offset = unsafe { ptr.add(i * vector_dim) };
+        keys.iter().enumerate().for_each(|(i, _key)| {
+            let vector_offset = unsafe { vectors.add(i * vector_dim) };
 
             let vector: &[f32] = unsafe { std::slice::from_raw_parts(vector_offset, vector_dim) };
             index.add(keys[i], vector).unwrap();
