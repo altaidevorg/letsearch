@@ -46,16 +46,17 @@ impl VectorIndex {
         Ok(())
     }
 
-    pub fn add(
+    pub async fn add(
         &self,
         keys: &Vec<u64>,
         vectors: *const f32,
         vector_dim: usize,
     ) -> anyhow::Result<()> {
         let index = self.index.as_ref().unwrap();
+
+        // TODO: parallelize with tokio_stream later on
         keys.iter().enumerate().for_each(|(i, _key)| {
             let vector_offset = unsafe { vectors.add(i * vector_dim) };
-
             let vector: &[f32] = unsafe { std::slice::from_raw_parts(vector_offset, vector_dim) };
             index.add(keys[i], vector).unwrap();
         });

@@ -132,7 +132,7 @@ impl Collection {
             Embeddings::F32(emb) => {
                 let (num_vectors, vector_dim) = emb.dim();
                 let ids: Vec<_> = (offset..offset + num_vectors as u64).collect();
-                index.add(&ids, emb.as_ptr(), vector_dim).unwrap();
+                index.add(&ids, emb.as_ptr(), vector_dim).await.unwrap();
 
                 debug!("output shape: {:?}", emb.dim());
             }
