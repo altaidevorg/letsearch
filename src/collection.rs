@@ -6,10 +6,17 @@ use duckdb::arrow::array::StringArray;
 use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 use log::{debug, info};
-use std::fs;
-use std::path::Path;
 use std::time::Instant;
+use std::{fs, path::PathBuf};
 use usearch::{IndexOptions, MetricKind, ScalarKind};
+
+const DEFAULT_HOME_DIR: &str = ".letsearch";
+
+pub fn home_dir() -> PathBuf {
+    std::env::var("LETSEARCH_HOME")
+        .unwrap_or_else(|_| DEFAULT_HOME_DIR.to_string())
+        .into()
+}
 
 pub struct Collection {
     name: String,
@@ -20,13 +27,14 @@ pub struct Collection {
 impl Collection {
     pub fn new(name: String, overwrite: bool) -> anyhow::Result<Self> {
         debug!("creating new Collection instance");
-        let collection_dir = Path::new(&name);
+        let collection_dir = home_dir().join("collections").join(name.as_str());
+        let collection_dir_str = collection_dir.to_str().unwrap();
         if overwrite && collection_dir.exists() {
             debug!("Collection already exists, overwriting");
-            fs::remove_dir_all(name.as_str())?;
+            fs::remove_dir_all(collection_dir_str)?;
         }
 
-        fs::create_dir_all(name.as_str())?;
+        fs::create_dir_all(collection_dir_str)?;
         let db_path = collection_dir.join("data.db");
         let conn = Connection::open(db_path)?;
         debug!("Connection opened to DB");
@@ -39,6 +47,7 @@ impl Collection {
     }
 
     pub fn import_jsonl(&self, jsonl_path: &str) -> anyhow::Result<()> {
+        let start = Instant::now();
         self.conn.execute_batch(
             format!(
                 "CREATE TABLE {} AS SELECT * FROM read_json_auto('{}');",
@@ -46,7 +55,11 @@ impl Collection {
             )
             .as_str(),
         )?;
-        debug!("JSONL file imported");
+        info!(
+            "Records imported from {:?} in {:?}",
+            jsonl_path,
+            start.elapsed()
+        );
 
         Ok(())
     }
@@ -110,7 +123,11 @@ impl Collection {
         let embeddings = model_manager.predict(model_id, inputs).await.unwrap();
 
         let index = self.vector_index.get_or_insert_with(|| {
-            let index_path = String::from("test1/index");
+            let index_path = home_dir()
+                .join("collections")
+                .join(self.name.as_str())
+                .join("index")
+                .join(column_name);
             let options = IndexOptions {
                 dimensions: 384,
                 metric: MetricKind::Cos,
@@ -150,6 +167,7 @@ impl Collection {
         model_id: u32,
     ) -> anyhow::Result<()> {
         let num_batches = 2048 / batch_size;
+        info!("Starting to index column '{column_name}' in batches of {batch_size}");
 
         let start = Instant::now();
         for batch in 0..num_batches {

@@ -99,16 +99,23 @@ async fn main() -> anyhow::Result<()> {
                 Collection::new(collection_name.to_string(), overwrite.to_owned()).unwrap();
             let jsonl_path = &files[0];
             collection.import_jsonl(jsonl_path)?;
-            let model_manager = ModelManager::new();
-            let model_id = model_manager
-                .load_model(model.to_string(), Backend::ONNX)
-                .await
-                .unwrap();
-            info!("model successfully loaded from {model}");
-            let _ = collection
-                .embed_column("user", batch_size.to_owned(), &model_manager, model_id)
-                .await
-                .unwrap();
+            if index_columns.len() > 0 {
+                let model_manager = ModelManager::new();
+                let model_id = model_manager
+                    .load_model(model.to_string(), Backend::ONNX)
+                    .await
+                    .unwrap();
+                info!("model successfully loaded from {model}");
+                let _ = collection
+                    .embed_column(
+                        &index_columns[0],
+                        batch_size.to_owned(),
+                        &model_manager,
+                        model_id,
+                    )
+                    .await
+                    .unwrap();
+            }
         }
 
         Commands::Serve { host, port } => {

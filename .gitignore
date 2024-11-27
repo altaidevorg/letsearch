@@ -3,4 +3,4 @@
 *.dll
 
 *.bin
-test1/
+.letsearch/

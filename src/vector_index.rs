@@ -1,28 +1,28 @@
 use anyhow;
 use log::debug;
-use std::path::Path;
+use std::path::PathBuf;
 use std::{fs, u64, usize};
 use usearch::{new_index, Index, IndexOptions};
 
 pub struct VectorIndex {
     pub index: Option<Index>,
-    path: String,
+    path: PathBuf,
 }
 
 impl VectorIndex {
-    pub fn new(path: String, overwrite: bool) -> anyhow::Result<Self> {
+    pub fn new(index_dir: PathBuf, overwrite: bool) -> anyhow::Result<Self> {
         debug!("creating new VectorIndex instance");
-        let index_dir = Path::new(&path);
+        let index_dir_str = index_dir.to_str().unwrap();
         if overwrite && index_dir.exists() {
             debug!("index already exists, overwriting");
-            fs::remove_dir_all(path.as_str())?;
+            fs::remove_dir_all(index_dir_str)?;
         }
 
-        fs::create_dir_all(path.as_str())?;
+        fs::create_dir_all(index_dir_str)?;
 
         Ok(VectorIndex {
             index: None,
-            path: path,
+            path: index_dir,
         })
     }
 
@@ -39,9 +39,7 @@ impl VectorIndex {
 
     pub fn save(&self) -> anyhow::Result<()> {
         let index = self.index.as_ref().unwrap();
-        let index_dir = Path::new(&self.path);
-        let index_path = index_dir.join("index.bin");
-
+        let index_path = self.path.join("index.bin");
         index.save(index_path.to_str().unwrap()).unwrap();
         Ok(())
     }
