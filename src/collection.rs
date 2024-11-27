@@ -8,6 +8,7 @@ use duckdb::Connection;
 use log::{debug, info};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 use usearch::{IndexOptions, MetricKind, ScalarKind};
 

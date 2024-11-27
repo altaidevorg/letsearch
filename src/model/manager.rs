@@ -6,6 +6,7 @@ use ndarray::Array2;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
 pub struct ModelManager {
     models: RwLock<HashMap<u32, Arc<RwLock<dyn ONNXModel>>>>,
     next_id: RwLock<u32>,
