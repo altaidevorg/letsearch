@@ -6,6 +6,9 @@ use duckdb::arrow::array::StringArray;
 use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 use log::{debug, info};
+use serde::{Deserialize, Serialize};
+use serde_json;
+use std::fs::File;
 use std::time::Instant;
 use std::{fs, path::PathBuf};
 use usearch::{IndexOptions, MetricKind, ScalarKind};
@@ -18,29 +21,76 @@ pub fn home_dir() -> PathBuf {
         .into()
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CollectionConfig {
+    #[serde(default = "default_collection_name")]
+    pub name: String,
+    #[serde(default = "default_index_columns")]
+    pub index_columns: Vec<String>,
+    #[serde(default = "default_db_path")]
+    db_path: String,
+    #[serde(default = "default_serialization_version")]
+    serialization_version: u32,
+}
+
+fn default_collection_name() -> String {
+    "default".to_string()
+}
+
+fn default_index_columns() -> Vec<String> {
+    vec![String::from("text")]
+}
+
+fn default_db_path() -> String {
+    "data.db".to_string()
+}
+
+fn default_serialization_version() -> u32 {
+    1
+}
+
+impl CollectionConfig {
+    pub fn default() -> Self {
+        CollectionConfig {
+            name: default_collection_name(),
+            index_columns: default_index_columns(),
+            db_path: default_db_path(),
+            serialization_version: default_serialization_version(),
+        }
+    }
+}
+
 pub struct Collection {
-    name: String,
+    config: CollectionConfig,
     conn: Connection,
     vector_index: Option<VectorIndex>,
 }
 
 impl Collection {
-    pub fn new(name: String, overwrite: bool) -> anyhow::Result<Self> {
+    pub fn new(config: CollectionConfig, overwrite: bool) -> anyhow::Result<Self> {
         debug!("creating new Collection instance");
-        let collection_dir = home_dir().join("collections").join(name.as_str());
+        let name = config.name.as_str();
+        let collection_dir = home_dir().join("collections").join(name);
         let collection_dir_str = collection_dir.to_str().unwrap();
         if overwrite && collection_dir.exists() {
             debug!("Collection already exists, overwriting");
             fs::remove_dir_all(collection_dir_str)?;
+            debug!("removed existing collection for overwriting");
         }
 
         fs::create_dir_all(collection_dir_str)?;
-        let db_path = collection_dir.join("data.db");
-        let conn = Connection::open(db_path)?;
+        debug!("Created collection dir: {collection_dir_str}");
+        let db_path = collection_dir.join(config.db_path.as_str());
+
+        let conn = Connection::open(db_path).expect("error while trying to open connection to db");
         debug!("Connection opened to DB");
 
+        let config_file = File::create(collection_dir.join("config.json").to_str().unwrap())
+            .expect("error while trying to create config.json");
+        let _ = serde_json::to_writer(config_file, &config).unwrap();
+
         Ok(Collection {
-            name: name,
+            config: config,
             conn: conn,
             vector_index: None,
         })
@@ -51,7 +101,7 @@ impl Collection {
         self.conn.execute_batch(
             format!(
                 "CREATE TABLE {} AS SELECT * FROM read_json_auto('{}');",
-                &self.name, jsonl_path
+                &self.config.name, jsonl_path
             )
             .as_str(),
         )?;
@@ -74,7 +124,7 @@ impl Collection {
         let mut stmt = self.conn.prepare(
             format!(
                 "SELECT {} FROM {} LIMIT {} OFFSET {};",
-                column_name, &self.name, batch_size, offset
+                column_name, &self.config.name, batch_size, offset
             )
             .as_str(),
         )?;
@@ -125,7 +175,7 @@ impl Collection {
         let index = self.vector_index.get_or_insert_with(|| {
             let index_path = home_dir()
                 .join("collections")
-                .join(self.name.as_str())
+                .join(self.config.name.as_str())
                 .join("index")
                 .join(column_name);
             let options = IndexOptions {

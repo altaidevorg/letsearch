@@ -1,4 +1,4 @@
-use crate::collection::Collection;
+use crate::collection::{Collection, CollectionConfig};
 use crate::model::manager::ModelManager;
 use crate::model::model_utils::Backend;
 use crate::serve::run_server;
@@ -95,8 +95,10 @@ async fn main() -> anyhow::Result<()> {
             if !index_columns.is_empty() {
                 info!("index columns: {:?}", index_columns);
             }
-            let mut collection =
-                Collection::new(collection_name.to_string(), overwrite.to_owned()).unwrap();
+            let mut config = CollectionConfig::default();
+            config.name = collection_name.to_string();
+            config.index_columns = index_columns.to_vec();
+            let mut collection = Collection::new(config, overwrite.to_owned()).unwrap();
             let jsonl_path = &files[0];
             collection.import_jsonl(jsonl_path)?;
             if index_columns.len() > 0 {
