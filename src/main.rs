@@ -55,6 +55,10 @@ enum Commands {
 
     /// serve a collection for search over web API
     Serve {
+        /// collection to serve
+        #[arg(short, long, required = true)]
+        collection_name: String,
+
         /// host to listen to
         #[arg(short('H'), long, default_value = "127.0.0.1")]
         host: String,
@@ -120,7 +124,12 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        Commands::Serve { host, port } => {
+        Commands::Serve {
+            collection_name,
+            host,
+            port,
+        } => {
+            let _collection = Collection::from(collection_name.to_string());
             run_server(host.to_string(), port.to_owned()).await.unwrap();
         }
     }

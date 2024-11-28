@@ -1,5 +1,5 @@
 use anyhow;
-use log::debug;
+use log::{debug, info};
 use std::path::PathBuf;
 use std::{fs, u64, usize};
 use usearch::{new_index, Index, IndexOptions};
@@ -35,6 +35,22 @@ impl VectorIndex {
         index.reserve(capacity).unwrap();
         self.index = Some(index);
         Ok(self)
+    }
+
+    pub fn from(path: PathBuf) -> anyhow::Result<Self> {
+        let index_path = path.join("index.bin");
+        let index_path_str = index_path.to_str().unwrap();
+        let config = IndexOptions::default();
+        let index = Index::new(&config).unwrap();
+        index.load(index_path_str).unwrap();
+        info!("vector index loaded from {:?}", path.to_str());
+        info!("vector count: {:?}", index.size());
+        info!("vector dimensions: {:?}", index.dimensions());
+
+        Ok(VectorIndex {
+            index: Some(index),
+            path: path,
+        })
     }
 
     pub fn save(&self) -> anyhow::Result<()> {

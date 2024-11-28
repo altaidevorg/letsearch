@@ -1,7 +1,7 @@
 use crate::model::manager::ModelManager;
 use crate::model::model_utils::Embeddings;
 use crate::vector_index::VectorIndex;
-use anyhow;
+use anyhow::Error;
 use duckdb::arrow::array::StringArray;
 use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
@@ -93,6 +93,32 @@ impl Collection {
             config: config,
             conn: conn,
             vector_index: None,
+        })
+    }
+
+    pub fn from(name: String) -> anyhow::Result<Self> {
+        let collection_dir = home_dir().join("collections").join(name.as_str());
+        if !collection_dir.exists() {
+            return Err(Error::msg("Collection {name} does not exist"));
+        }
+
+        let config_path = collection_dir.join("config.json");
+        if !config_path.exists() {
+            return Err(Error::msg("config file does not exist"));
+        }
+
+        let config_file = File::open(config_path).unwrap();
+        let config: CollectionConfig = serde_json::from_reader(config_file)?;
+        let conn = Connection::open(collection_dir.join(config.db_path.as_str()))?;
+        let index_path = collection_dir
+            .join("index")
+            .join(config.index_columns[0].as_str());
+        let vector_index = VectorIndex::from(index_path.to_path_buf()).unwrap();
+
+        Ok(Collection {
+            config: config,
+            conn: conn,
+            vector_index: Some(vector_index),
         })
     }
 
