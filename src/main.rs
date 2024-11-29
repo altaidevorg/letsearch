@@ -1,4 +1,5 @@
-use crate::collection::{Collection, CollectionConfig};
+use crate::collection::collection::Collection;
+use crate::collection::collection_utils::CollectionConfig;
 use crate::model::manager::ModelManager;
 use crate::model::model_utils::Backend;
 use crate::serve::run_server;
@@ -19,13 +20,13 @@ use std::io::Write;
     subcommand_required = true,
     arg_required_else_help = true
 )]
-struct Cli {
+pub struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand, Debug)]
-enum Commands {
+pub enum Commands {
     /// Index documents
     Index {
         /// Path to files to index
@@ -96,9 +97,6 @@ async fn main() -> anyhow::Result<()> {
             index_columns,
             overwrite,
         } => {
-            if !index_columns.is_empty() {
-                info!("index columns: {:?}", index_columns);
-            }
             let mut config = CollectionConfig::default();
             config.name = collection_name.to_string();
             config.index_columns = index_columns.to_vec();
@@ -129,8 +127,13 @@ async fn main() -> anyhow::Result<()> {
             host,
             port,
         } => {
-            let _collection = Collection::from(collection_name.to_string());
-            run_server(host.to_string(), port.to_owned()).await.unwrap();
+            run_server(
+                host.to_string(),
+                port.to_owned(),
+                collection_name.to_string(),
+            )
+            .await
+            .unwrap();
         }
     }
 
@@ -140,4 +143,3 @@ async fn main() -> anyhow::Result<()> {
 mod collection;
 mod model;
 mod serve;
-mod vector_index;

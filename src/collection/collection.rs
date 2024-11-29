@@ -1,64 +1,17 @@
+use crate::collection::collection_utils::{home_dir, CollectionConfig};
+use crate::collection::vector_index::VectorIndex;
 use crate::model::manager::ModelManager;
 use crate::model::model_utils::Embeddings;
-use crate::vector_index::VectorIndex;
 use anyhow::Error;
 use duckdb::arrow::array::StringArray;
 use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 use log::{debug, info};
-use serde::{Deserialize, Serialize};
 use serde_json;
+use std::fs;
 use std::fs::File;
 use std::time::Instant;
-use std::{fs, path::PathBuf};
 use usearch::{IndexOptions, MetricKind, ScalarKind};
-
-const DEFAULT_HOME_DIR: &str = ".letsearch";
-
-pub fn home_dir() -> PathBuf {
-    std::env::var("LETSEARCH_HOME")
-        .unwrap_or_else(|_| DEFAULT_HOME_DIR.to_string())
-        .into()
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct CollectionConfig {
-    #[serde(default = "default_collection_name")]
-    pub name: String,
-    #[serde(default = "default_index_columns")]
-    pub index_columns: Vec<String>,
-    #[serde(default = "default_db_path")]
-    db_path: String,
-    #[serde(default = "default_serialization_version")]
-    serialization_version: u32,
-}
-
-fn default_collection_name() -> String {
-    "default".to_string()
-}
-
-fn default_index_columns() -> Vec<String> {
-    vec![String::from("text")]
-}
-
-fn default_db_path() -> String {
-    "data.db".to_string()
-}
-
-fn default_serialization_version() -> u32 {
-    1
-}
-
-impl CollectionConfig {
-    pub fn default() -> Self {
-        CollectionConfig {
-            name: default_collection_name(),
-            index_columns: default_index_columns(),
-            db_path: default_db_path(),
-            serialization_version: default_serialization_version(),
-        }
-    }
-}
 
 pub struct Collection {
     config: CollectionConfig,
@@ -120,6 +73,10 @@ impl Collection {
             conn: conn,
             vector_index: Some(vector_index),
         })
+    }
+
+    pub fn config(&self) -> CollectionConfig {
+        self.config.clone()
     }
 
     pub fn import_jsonl(&self, jsonl_path: &str) -> anyhow::Result<()> {
