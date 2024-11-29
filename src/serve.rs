@@ -1,9 +1,9 @@
-use crate::collection::collection::Collection;
-use crate::collection::collection_utils::CollectionConfig;
+use crate::collection::collection_manager::CollectionManager;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 #[derive(Deserialize)]
 struct QueryRequest {
@@ -15,15 +15,38 @@ struct QueryRequest {
 struct HelthcheckResponse {
     version: String,
     status: String,
-    collections: Vec<CollectionConfig>,
 }
 
-async fn healthcheck(collection: web::Data<Mutex<Collection>>) -> impl Responder {
-    let collection = collection.lock().unwrap();
+#[derive(Serialize)]
+struct CollectionConfigPresentable {
+    name: String,
+    index_columns: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct CollectionsResponse {
+    collections: Vec<CollectionConfigPresentable>,
+}
+
+async fn healthcheck() -> impl Responder {
     let response = HelthcheckResponse {
         version: "0.1.0".to_string(),
         status: "ok".to_string(),
-        collections: vec![collection.config()],
+    };
+    HttpResponse::Ok().json(response)
+}
+
+async fn get_collections(manager: web::Data<RwLock<CollectionManager>>) -> impl Responder {
+    let configs = manager.read().await.get_collection_configs().await;
+    let configs_presentable = configs
+        .iter()
+        .map(|c| CollectionConfigPresentable {
+            name: c.name.to_string(),
+            index_columns: c.index_columns.to_vec(),
+        })
+        .collect();
+    let response = CollectionsResponse {
+        collections: configs_presentable,
     };
     HttpResponse::Ok().json(response)
 }
@@ -37,12 +60,17 @@ async fn search(req: web::Json<QueryRequest>) -> impl Responder {
 }
 
 pub async fn run_server(host: String, port: i32, collection_name: String) -> std::io::Result<()> {
-    let collection = Collection::from(collection_name).unwrap();
-    let shared_collection = web::Data::new(Mutex::new(collection));
+    let collection_manager = CollectionManager::new();
+    let _ = collection_manager
+        .load_collection(collection_name)
+        .await
+        .unwrap();
+    let shared_manager = web::Data::new(RwLock::new(collection_manager));
     HttpServer::new(move || {
         App::new()
-            .app_data(shared_collection.clone())
+            .app_data(shared_manager.clone())
             .route("/", web::get().to(healthcheck))
+            .route("/collections", web::get().to(get_collections))
             .route("/search", web::post().to(search))
     })
     .bind(format!("{host}:{port}"))?

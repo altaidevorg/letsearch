@@ -1,6 +1,6 @@
-use crate::collection::collection::Collection;
+use crate::collection::collection_type::Collection;
 use crate::collection::collection_utils::CollectionConfig;
-use crate::model::manager::ModelManager;
+use crate::model::model_manager::ModelManager;
 use crate::model::model_utils::Backend;
 use crate::serve::run_server;
 use anyhow;

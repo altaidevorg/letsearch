@@ -1,6 +1,6 @@
 use crate::collection::collection_utils::{home_dir, CollectionConfig};
 use crate::collection::vector_index::VectorIndex;
-use crate::model::manager::ModelManager;
+use crate::model::model_manager::ModelManager;
 use crate::model::model_utils::Embeddings;
 use anyhow::Error;
 use duckdb::arrow::array::StringArray;
