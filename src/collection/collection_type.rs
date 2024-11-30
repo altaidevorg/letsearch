@@ -174,9 +174,12 @@ impl Collection {
                 let (num_vectors, vector_dim) = emb.dim();
                 let ids: Vec<_> = (offset..offset + num_vectors as u64).collect();
                 let indexes_guard = self.vector_index.read().await;
-                let index_guard = indexes_guard.get(column_name).unwrap().clone();
-                let index = index_guard.write().await;
-                index.add(&ids, emb.as_ptr(), vector_dim).await.unwrap();
+                let index = indexes_guard.get(column_name).unwrap().clone();
+                let index_guard = index.write().await;
+                index_guard
+                    .add(&ids, emb.as_ptr(), vector_dim)
+                    .await
+                    .unwrap();
 
                 debug!("output shape: {:?}", emb.dim());
             }
@@ -234,6 +237,8 @@ impl Collection {
             .await
             .unwrap();
         }
+
+        // save index to disk
         self.vector_index
             .read()
             .await
@@ -251,6 +256,6 @@ impl Collection {
     }
 }
 
-// Needed because Rust does not understand Collection::conn is thread-safe.
+// Needed because Rust does not understand Collection::conn is managed for thread safety.
 unsafe impl Send for Collection {}
 unsafe impl Sync for Collection {}

@@ -62,6 +62,9 @@ impl ModelTrait for BertONNX {
             pad_token: "<pad>".into(),
         }));
 
+        // TODO: instead of using a hardcoded index,
+        // use .filter to get the output tensor by name
+
         // determine output dtype
         let dtype = session.outputs[1]
             .output_type
@@ -75,6 +78,7 @@ impl ModelTrait for BertONNX {
             _ => None,
         };
 
+        // determine model output dimension
         let dim = session.outputs[1]
             .output_type
             .tensor_dimensions()
@@ -82,8 +86,7 @@ impl ModelTrait for BertONNX {
             .last()
             .unwrap()
             .to_owned();
-        info!("outputs: {:?}", &session.outputs);
-        info!("output_dim: {dim}");
+        info!("Model output dim: {dim}");
 
         // determine if the models needs token_type_ids
         let tti_name = "token_type_ids";
