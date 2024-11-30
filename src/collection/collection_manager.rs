@@ -1,5 +1,6 @@
 use crate::collection::collection_type::Collection;
 use crate::model::model_manager::ModelManager;
+use crate::model::model_utils::Backend;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -25,16 +26,16 @@ impl CollectionManager {
         let collection = Arc::new(RwLock::new(Collection::from(name.clone()).await.unwrap()));
         let collection_guard = collection.read().await;
         let requested_models = collection_guard.requested_models().await;
-        if requested_models.len() > 0 {
+        if !requested_models.is_empty() {
             let manager_guard = self.model_manager.write().await;
             for requested_model in requested_models {
                 let mut lookup_guard = self.model_lookup.write().await;
                 if !lookup_guard.contains_key(requested_model.as_str()) {
                     let model_id = manager_guard
-                        .load_model(requested_model, crate::model::model_utils::Backend::ONNX)
+                        .load_model(requested_model.clone(), Backend::ONNX)
                         .await
                         .unwrap();
-                    lookup_guard.insert(name.clone(), model_id);
+                    lookup_guard.insert(requested_model.clone(), model_id);
                 }
             }
         }
@@ -54,16 +55,13 @@ impl CollectionManager {
         let collection = Arc::new(RwLock::new(Collection::new(config, overwrite).await?));
         let collection_guard = collection.read().await;
         let requested_models = collection_guard.requested_models().await;
-        if requested_models.len() > 0 {
+        if !requested_models.is_empty() {
             let manager_guard = self.model_manager.write().await;
             for requested_model in requested_models {
                 let mut lookup_guard = self.model_lookup.write().await;
                 if !lookup_guard.contains_key(requested_model.as_str()) {
                     let model_id = manager_guard
-                        .load_model(
-                            requested_model.clone(),
-                            crate::model::model_utils::Backend::ONNX,
-                        )
+                        .load_model(requested_model.clone(), Backend::ONNX)
                         .await
                         .unwrap();
                     lookup_guard.insert(requested_model.clone(), model_id);
