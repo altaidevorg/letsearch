@@ -17,7 +17,7 @@ impl CollectionManager {
     }
 
     pub async fn load_collection(&self, name: String) -> anyhow::Result<()> {
-        let collection = Arc::new(RwLock::new(Collection::from(name.clone())?));
+        let collection = Arc::new(RwLock::new(Collection::from(name.clone()).await.unwrap()));
         let mut collections = self.collections.write().await;
         collections.insert(name.clone(), collection);
         Ok(())

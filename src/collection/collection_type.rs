@@ -13,10 +13,14 @@ use std::fs::File;
 use std::time::Instant;
 use usearch::{IndexOptions, MetricKind, ScalarKind};
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
 pub struct Collection {
     config: CollectionConfig,
     conn: Connection,
-    vector_index: Option<VectorIndex>,
+    vector_index: RwLock<HashMap<String, Arc<RwLock<VectorIndex>>>>,
 }
 
 impl Collection {
@@ -45,11 +49,11 @@ impl Collection {
         Ok(Collection {
             config: config,
             conn: conn,
-            vector_index: None,
+            vector_index: RwLock::new(HashMap::new()),
         })
     }
 
-    pub fn from(name: String) -> anyhow::Result<Self> {
+    pub async fn from(name: String) -> anyhow::Result<Self> {
         let collection_dir = home_dir().join("collections").join(name.as_str());
         if !collection_dir.exists() {
             return Err(Error::msg("Collection {name} does not exist"));
@@ -67,11 +71,16 @@ impl Collection {
             .join("index")
             .join(config.index_columns[0].as_str());
         let vector_index = VectorIndex::from(index_path.to_path_buf()).unwrap();
+        let vector_indexes = RwLock::new(HashMap::new());
+        {
+            let mut indexes_guard = vector_indexes.write().await;
+            indexes_guard.insert(name.clone(), Arc::new(RwLock::new(vector_index)));
+        }
 
         Ok(Collection {
             config: config,
             conn: conn,
-            vector_index: Some(vector_index),
+            vector_index: vector_indexes,
         })
     }
 
@@ -155,33 +164,37 @@ impl Collection {
         let inputs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         let embeddings = model_manager.predict(model_id, inputs).await.unwrap();
 
-        let index = self.vector_index.get_or_insert_with(|| {
-            let index_path = home_dir()
-                .join("collections")
-                .join(self.config.name.as_str())
-                .join("index")
-                .join(column_name);
-            let options = IndexOptions {
-                dimensions: 384,
-                metric: MetricKind::Cos,
-                quantization: ScalarKind::F32,
-                connectivity: 0,
-                expansion_add: 0,
-                expansion_search: 0,
-                multi: true,
-            };
-            let mut index = VectorIndex::new(index_path, true).unwrap();
-            index.with_options(&options, 20000).unwrap();
-            index
-        });
-
-        index.save()?;
+        {
+            let mut indexes_guard = self.vector_index.write().await;
+            if !indexes_guard.contains_key(column_name) {
+                let index_path = home_dir()
+                    .join("collections")
+                    .join(self.config.name.as_str())
+                    .join("index")
+                    .join(column_name);
+                let options = IndexOptions {
+                    dimensions: 384,
+                    metric: MetricKind::Cos,
+                    quantization: ScalarKind::F32,
+                    connectivity: 0,
+                    expansion_add: 0,
+                    expansion_search: 0,
+                    multi: true,
+                };
+                let mut index = VectorIndex::new(index_path, true).unwrap();
+                index.with_options(&options, 20000).unwrap();
+                indexes_guard.insert(column_name.to_string(), Arc::new(RwLock::new(index)));
+            }
+        }
 
         match embeddings {
             Embeddings::F16(emb) => debug!("output shape: {:?}", emb.dim()),
             Embeddings::F32(emb) => {
                 let (num_vectors, vector_dim) = emb.dim();
                 let ids: Vec<_> = (offset..offset + num_vectors as u64).collect();
+                let indexes_guard = self.vector_index.read().await;
+                let mut index_guard = indexes_guard.get(column_name).unwrap().clone();
+                let index = index_guard.write().await;
                 index.add(&ids, emb.as_ptr(), vector_dim).await.unwrap();
 
                 debug!("output shape: {:?}", emb.dim());
@@ -214,7 +227,16 @@ impl Collection {
             .await
             .unwrap();
         }
-        self.vector_index.as_ref().unwrap().save().unwrap();
+        self.vector_index
+            .read()
+            .await
+            .clone()
+            .get(column_name)
+            .unwrap()
+            .read()
+            .await
+            .save()
+            .unwrap();
 
         info!("Total duration: {:?}", start.elapsed());
 

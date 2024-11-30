@@ -2,7 +2,6 @@ use crate::collection::collection_manager::CollectionManager;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[derive(Deserialize)]
