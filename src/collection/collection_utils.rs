@@ -15,6 +15,8 @@ pub struct CollectionConfig {
     pub name: String,
     #[serde(default = "default_index_columns")]
     pub index_columns: Vec<String>,
+    #[serde(default = "default_model_name")]
+    pub model_name: String,
     #[serde(default = "default_db_path")]
     pub db_path: String,
     #[serde(default = "default_serialization_version")]
@@ -22,15 +24,19 @@ pub struct CollectionConfig {
 }
 
 fn default_collection_name() -> String {
-    "default".to_string()
+    String::from("default")
 }
 
 fn default_index_columns() -> Vec<String> {
     vec![String::from("text")]
 }
 
+fn default_model_name() -> String {
+    String::from("minilm")
+}
+
 fn default_db_path() -> String {
-    "data.db".to_string()
+    String::from("data.db")
 }
 
 fn default_serialization_version() -> u32 {
@@ -42,6 +48,7 @@ impl CollectionConfig {
         CollectionConfig {
             name: default_collection_name(),
             index_columns: default_index_columns(),
+            model_name: default_model_name(),
             db_path: default_db_path(),
             serialization_version: default_serialization_version(),
         }
