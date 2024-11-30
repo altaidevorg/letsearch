@@ -1,11 +1,9 @@
-use crate::collection::collection_type::Collection;
 use crate::collection::collection_utils::CollectionConfig;
-use crate::model::model_manager::ModelManager;
-use crate::model::model_utils::Backend;
 use crate::serve::run_server;
 use anyhow;
 use chrono;
 use clap::{Parser, Subcommand};
+use collection::collection_manager::CollectionManager;
 use env_logger::fmt::Formatter;
 use log::{info, Record};
 use std::io::Write;
@@ -100,25 +98,21 @@ async fn main() -> anyhow::Result<()> {
             let mut config = CollectionConfig::default();
             config.name = collection_name.to_string();
             config.index_columns = index_columns.to_vec();
-            let mut collection = Collection::new(config, overwrite.to_owned()).unwrap();
+            config.model_name = model.to_string();
+            let collection_manager = CollectionManager::new();
+            collection_manager
+                .create_collection(config, overwrite.to_owned())
+                .await?;
+            info!("Collection '{}' created", collection_name);
             let jsonl_path = &files[0];
-            collection.import_jsonl(jsonl_path).await?;
-            if index_columns.len() > 0 {
-                let model_manager = ModelManager::new();
-                let model_id = model_manager
-                    .load_model(model.to_string(), Backend::ONNX)
-                    .await
-                    .unwrap();
-                info!("model successfully loaded from {model}");
-                let _ = collection
-                    .embed_column(
-                        &index_columns[0],
-                        batch_size.to_owned(),
-                        &model_manager,
-                        model_id,
-                    )
-                    .await
-                    .unwrap();
+            collection_manager
+                .import_jsonl(&collection_name, jsonl_path)
+                .await?;
+
+            if !index_columns.is_empty() {
+                collection_manager
+                    .embed_column(&collection_name, &index_columns[0], batch_size.to_owned())
+                    .await?;
             }
         }
 
@@ -132,8 +126,7 @@ async fn main() -> anyhow::Result<()> {
                 port.to_owned(),
                 collection_name.to_string(),
             )
-            .await
-            .unwrap();
+            .await?;
         }
     }
 

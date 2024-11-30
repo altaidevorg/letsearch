@@ -23,7 +23,7 @@ pub struct Collection {
 }
 
 impl Collection {
-    pub fn new(config: CollectionConfig, overwrite: bool) -> anyhow::Result<Self> {
+    pub async fn new(config: CollectionConfig, overwrite: bool) -> anyhow::Result<Self> {
         debug!("creating new Collection instance");
         let name = config.name.as_str();
         let collection_dir = home_dir().join("collections").join(name);
@@ -70,7 +70,7 @@ impl Collection {
             .join("index")
             .join(config.index_columns[0].as_str());
         let vector_indexes = RwLock::new(HashMap::new());
-        let vector_index = VectorIndex::from(index_path.to_path_buf()).unwrap();
+        let vector_index = VectorIndex::from(index_path.to_path_buf())?;
         {
             let mut indexes_guard = vector_indexes.write().await;
             indexes_guard.insert(name.clone(), Arc::new(RwLock::new(vector_index)));
@@ -155,7 +155,7 @@ impl Collection {
         column_name: &str,
         batch_size: u64,
         offset: u64,
-        model_manager: &ModelManager,
+        model_manager: Arc<RwLock<ModelManager>>,
         model_id: u32,
     ) -> anyhow::Result<()> {
         let start = Instant::now();
@@ -166,7 +166,12 @@ impl Collection {
         debug!("getting texts from DB took: {:?}", start.elapsed());
         let start = Instant::now();
         let inputs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let embeddings = model_manager.predict(model_id, inputs).await.unwrap();
+        let embeddings = model_manager
+            .read()
+            .await
+            .predict(model_id, inputs)
+            .await
+            .unwrap();
 
         match embeddings {
             Embeddings::F16(emb) => debug!("output shape: {:?}", emb.dim()),
@@ -193,16 +198,21 @@ impl Collection {
         &mut self,
         column_name: &str,
         batch_size: u64,
-        model_manager: &ModelManager,
+        model_manager: Arc<RwLock<ModelManager>>,
         model_id: u32,
     ) -> anyhow::Result<()> {
-        let num_batches = 4096 / batch_size;
+        let num_batches = (4096 + batch_size - 1) / batch_size;
         info!("Starting to index column '{column_name}' in batches of {batch_size}");
 
         {
             let mut indexes_guard = self.vector_index.write().await;
             if !indexes_guard.contains_key(column_name) {
-                let vector_dim = model_manager.output_dim(model_id).await.unwrap();
+                let vector_dim = model_manager
+                    .read()
+                    .await
+                    .output_dim(model_id)
+                    .await
+                    .unwrap();
 
                 let index_path = home_dir()
                     .join("collections")
@@ -246,7 +256,7 @@ impl Collection {
                 column_name,
                 batch_size,
                 batch * batch_size,
-                model_manager,
+                model_manager.clone(),
                 model_id,
             )
             .await
@@ -269,6 +279,10 @@ impl Collection {
         info!("Total duration: {:?}", start.elapsed());
 
         Ok(())
+    }
+
+    pub async fn requested_models(&self) -> Vec<String> {
+        vec![self.config.model_name.clone()]
     }
 }
 

@@ -40,9 +40,10 @@ impl VectorIndex {
     pub fn from(path: PathBuf) -> anyhow::Result<Self> {
         let index_path = path.join("index.bin");
         let index_path_str = index_path.to_str().unwrap();
+        info!("Index path: {:?}", index_path_str);
         let config = IndexOptions::default();
-        let index = Index::new(&config).unwrap();
-        index.load(index_path_str).unwrap();
+        let index = Index::new(&config)?;
+        index.load(index_path_str)?;
         info!("vector index loaded from {:?}", path.to_str().unwrap());
         info!("vector count: {:?}", index.size());
         info!("vector dimensions: {:?}", index.dimensions());

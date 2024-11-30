@@ -62,6 +62,8 @@ impl ModelTrait for BertONNX {
             pad_token: "<pad>".into(),
         }));
 
+        info!("Model loaded from {}", model_path);
+
         // TODO: instead of using a hardcoded index,
         // use .filter to get the output tensor by name
 
