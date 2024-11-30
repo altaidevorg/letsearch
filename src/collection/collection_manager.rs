@@ -124,31 +124,26 @@ impl CollectionManager {
         column_name: &str,
         batch_size: u64,
     ) -> anyhow::Result<()> {
+        // Fetch collection
         let collection = {
             let collections_guard = self.collections.read().await;
-
-            match collections_guard.get(collection_name) {
-                Some(collection) => collection.clone(),
-                None => {
-                    return Err(anyhow::anyhow!(
-                        "Collection '{}' does not exist",
-                        collection_name
-                    ));
-                }
-            }
+            collections_guard
+                .get(collection_name)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Collection '{}' does not exist", collection_name))?
         };
 
+        // Fetch model ID
+        let model_name = collection.read().await.config().model_name;
         let model_id = {
-            let model_name = collection.read().await.config().model_name;
             let lookup_guard = self.model_lookup.read().await;
-            match lookup_guard.get(model_name.as_str()) {
-                Some(model_id) => *model_id,
-                None => {
-                    return Err(anyhow::anyhow!("Model '{}' is not loaded", model_name));
-                }
-            }
+            lookup_guard
+                .get(&model_name)
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("Model '{}' is not loaded", model_name))?
         };
 
+        // Perform embedding
         let mut collection_guard = collection.write().await;
         collection_guard
             .embed_column(

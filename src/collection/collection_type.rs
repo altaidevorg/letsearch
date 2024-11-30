@@ -201,7 +201,7 @@ impl Collection {
         model_manager: Arc<RwLock<ModelManager>>,
         model_id: u32,
     ) -> anyhow::Result<()> {
-        let num_batches = 4096 / batch_size;
+        let num_batches = (4096 + batch_size - 1) / batch_size;
         info!("Starting to index column '{column_name}' in batches of {batch_size}");
 
         {

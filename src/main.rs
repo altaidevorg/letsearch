@@ -109,11 +109,10 @@ async fn main() -> anyhow::Result<()> {
                 .import_jsonl(&collection_name, jsonl_path)
                 .await?;
 
-            if index_columns.len() > 0 {
+            if !index_columns.is_empty() {
                 collection_manager
                     .embed_column(&collection_name, &index_columns[0], batch_size.to_owned())
-                    .await
-                    .unwrap();
+                    .await?;
             }
         }
 
@@ -127,8 +126,7 @@ async fn main() -> anyhow::Result<()> {
                 port.to_owned(),
                 collection_name.to_string(),
             )
-            .await
-            .unwrap();
+            .await?;
         }
     }
 
