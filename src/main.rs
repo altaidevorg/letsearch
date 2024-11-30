@@ -102,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
             config.index_columns = index_columns.to_vec();
             let mut collection = Collection::new(config, overwrite.to_owned()).unwrap();
             let jsonl_path = &files[0];
-            collection.import_jsonl(jsonl_path)?;
+            collection.import_jsonl(jsonl_path).await?;
             if index_columns.len() > 0 {
                 let model_manager = ModelManager::new();
                 let model_id = model_manager

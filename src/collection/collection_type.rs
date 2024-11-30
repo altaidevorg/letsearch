@@ -8,18 +8,17 @@ use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 use log::{debug, info};
 use serde_json;
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
-use std::time::Instant;
-use usearch::{IndexOptions, MetricKind, ScalarKind};
-
-use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
+use usearch::{IndexOptions, MetricKind, ScalarKind};
 
 pub struct Collection {
     config: CollectionConfig,
-    conn: Connection,
+    conn: Arc<RwLock<Connection>>,
     vector_index: RwLock<HashMap<String, Arc<RwLock<VectorIndex>>>>,
 }
 
@@ -48,7 +47,7 @@ impl Collection {
 
         Ok(Collection {
             config: config,
-            conn: conn,
+            conn: Arc::new(RwLock::new(conn)),
             vector_index: RwLock::new(HashMap::new()),
         })
     }
@@ -70,8 +69,8 @@ impl Collection {
         let index_path = collection_dir
             .join("index")
             .join(config.index_columns[0].as_str());
-        let vector_index = VectorIndex::from(index_path.to_path_buf()).unwrap();
         let vector_indexes = RwLock::new(HashMap::new());
+        let vector_index = VectorIndex::from(index_path.to_path_buf()).unwrap();
         {
             let mut indexes_guard = vector_indexes.write().await;
             indexes_guard.insert(name.clone(), Arc::new(RwLock::new(vector_index)));
@@ -79,7 +78,7 @@ impl Collection {
 
         Ok(Collection {
             config: config,
-            conn: conn,
+            conn: Arc::new(RwLock::new(conn)),
             vector_index: vector_indexes,
         })
     }
@@ -88,9 +87,11 @@ impl Collection {
         self.config.clone()
     }
 
-    pub fn import_jsonl(&self, jsonl_path: &str) -> anyhow::Result<()> {
+    pub async fn import_jsonl(&self, jsonl_path: &str) -> anyhow::Result<()> {
         let start = Instant::now();
-        self.conn.execute_batch(
+        let conn = self.conn.clone();
+        let conn_guard = conn.write().await;
+        conn_guard.execute_batch(
             format!(
                 "CREATE TABLE {} AS SELECT * FROM read_json_auto('{}');",
                 &self.config.name, jsonl_path
@@ -106,14 +107,16 @@ impl Collection {
         Ok(())
     }
 
-    pub fn get_single_column(
+    pub async fn get_single_column(
         &self,
         column_name: &str,
         batch_size: u64,
         offset: u64,
     ) -> anyhow::Result<Vec<String>> {
         assert!(batch_size >= 1);
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn.clone();
+        let conn_guard = conn.read().await;
+        let mut stmt = conn_guard.prepare(
             format!(
                 "SELECT {} FROM {} LIMIT {} OFFSET {};",
                 column_name, &self.config.name, batch_size, offset
@@ -147,7 +150,7 @@ impl Collection {
         Ok(col_values)
     }
 
-    pub async fn embed_column_with_offset(
+    async fn embed_column_with_offset(
         &mut self,
         column_name: &str,
         batch_size: u64,
@@ -158,34 +161,12 @@ impl Collection {
         let start = Instant::now();
         let texts = self
             .get_single_column(column_name, batch_size, offset)
+            .await
             .unwrap();
         debug!("getting texts from DB took: {:?}", start.elapsed());
         let start = Instant::now();
         let inputs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         let embeddings = model_manager.predict(model_id, inputs).await.unwrap();
-
-        {
-            let mut indexes_guard = self.vector_index.write().await;
-            if !indexes_guard.contains_key(column_name) {
-                let index_path = home_dir()
-                    .join("collections")
-                    .join(self.config.name.as_str())
-                    .join("index")
-                    .join(column_name);
-                let options = IndexOptions {
-                    dimensions: 384,
-                    metric: MetricKind::Cos,
-                    quantization: ScalarKind::F32,
-                    connectivity: 0,
-                    expansion_add: 0,
-                    expansion_search: 0,
-                    multi: true,
-                };
-                let mut index = VectorIndex::new(index_path, true).unwrap();
-                index.with_options(&options, 20000).unwrap();
-                indexes_guard.insert(column_name.to_string(), Arc::new(RwLock::new(index)));
-            }
-        }
 
         match embeddings {
             Embeddings::F16(emb) => debug!("output shape: {:?}", emb.dim()),
@@ -193,7 +174,7 @@ impl Collection {
                 let (num_vectors, vector_dim) = emb.dim();
                 let ids: Vec<_> = (offset..offset + num_vectors as u64).collect();
                 let indexes_guard = self.vector_index.read().await;
-                let mut index_guard = indexes_guard.get(column_name).unwrap().clone();
+                let index_guard = indexes_guard.get(column_name).unwrap().clone();
                 let index = index_guard.write().await;
                 index.add(&ids, emb.as_ptr(), vector_dim).await.unwrap();
 
@@ -212,10 +193,36 @@ impl Collection {
         model_manager: &ModelManager,
         model_id: u32,
     ) -> anyhow::Result<()> {
-        let num_batches = 2048 / batch_size;
+        let num_batches = 4096 / batch_size;
         info!("Starting to index column '{column_name}' in batches of {batch_size}");
 
         let start = Instant::now();
+
+        {
+            let mut indexes_guard = self.vector_index.write().await;
+            if !indexes_guard.contains_key(column_name) {
+                let vector_dim = model_manager.output_dim(model_id).await.unwrap();
+
+                let index_path = home_dir()
+                    .join("collections")
+                    .join(self.config.name.as_str())
+                    .join("index")
+                    .join(column_name);
+                let options = IndexOptions {
+                    dimensions: vector_dim as usize,
+                    metric: MetricKind::Cos,
+                    quantization: ScalarKind::F32,
+                    connectivity: 0,
+                    expansion_add: 0,
+                    expansion_search: 0,
+                    multi: true,
+                };
+                let mut index = VectorIndex::new(index_path, true).unwrap();
+                index.with_options(&options, 20000).unwrap();
+                indexes_guard.insert(column_name.to_string(), Arc::new(RwLock::new(index)));
+            }
+        }
+
         for batch in 0..num_batches {
             self.embed_column_with_offset(
                 column_name,
@@ -243,3 +250,7 @@ impl Collection {
         Ok(())
     }
 }
+
+// Needed because Rust does not understand Collection::conn is thread-safe.
+unsafe impl Send for Collection {}
+unsafe impl Sync for Collection {}

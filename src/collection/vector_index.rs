@@ -43,7 +43,7 @@ impl VectorIndex {
         let config = IndexOptions::default();
         let index = Index::new(&config).unwrap();
         index.load(index_path_str).unwrap();
-        info!("vector index loaded from {:?}", path.to_str());
+        info!("vector index loaded from {:?}", path.to_str().unwrap());
         info!("vector count: {:?}", index.size());
         info!("vector dimensions: {:?}", index.dimensions());
 

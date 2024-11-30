@@ -99,4 +99,15 @@ impl ModelManager {
             None => Err(Error::msg("Model not loaded")),
         }
     }
+
+    pub async fn output_dim(&self, model_id: u32) -> anyhow::Result<i64> {
+        let models = self.models.read().await;
+        match models.get(&model_id) {
+            Some(model) => {
+                let model_guard = model.read().await; // Lock the RwLock for reading
+                model_guard.output_dim().await
+            }
+            None => Err(Error::msg("Model not loaded")),
+        }
+    }
 }

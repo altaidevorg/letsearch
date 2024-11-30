@@ -14,6 +14,7 @@ struct QueryRequest {
 struct HelthcheckResponse {
     version: String,
     status: String,
+    collections: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -27,10 +28,13 @@ struct CollectionsResponse {
     collections: Vec<CollectionConfigPresentable>,
 }
 
-async fn healthcheck() -> impl Responder {
+async fn healthcheck(manager: web::Data<RwLock<CollectionManager>>) -> impl Responder {
+    let manager_guard = manager.read().await;
+    let collections = manager_guard.get_collections().await;
     let response = HelthcheckResponse {
         version: "0.1.0".to_string(),
         status: "ok".to_string(),
+        collections: collections,
     };
     HttpResponse::Ok().json(response)
 }

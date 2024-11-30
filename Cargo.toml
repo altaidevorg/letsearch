@@ -24,3 +24,7 @@ usearch = "2.16.6"
 
 [target.'cfg(windows)'.dependencies]
 ort = { version = "2.0.0-rc.8", features = ["load-dynamic", "ndarray", "half"]}
+
+[profile.release]
+opt-level = 3
+lto = true

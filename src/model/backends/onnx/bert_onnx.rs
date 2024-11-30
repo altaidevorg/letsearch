@@ -15,6 +15,7 @@ pub struct BertONNX {
     pub model: Option<Session>,
     pub tokenizer: Option<Tokenizer>,
     output_dtype: Option<ModelOutputDType>,
+    output_dim: Option<i64>,
     needs_token_type_ids: Option<bool>,
 }
 
@@ -24,6 +25,7 @@ impl BertONNX {
             tokenizer: None,
             model: None,
             output_dtype: None,
+            output_dim: None,
             needs_token_type_ids: None,
         }
     }
@@ -61,7 +63,7 @@ impl ModelTrait for BertONNX {
         }));
 
         // determine output dtype
-        let dtype = session.outputs[0]
+        let dtype = session.outputs[1]
             .output_type
             .tensor_type()
             .unwrap()
@@ -72,6 +74,16 @@ impl ModelTrait for BertONNX {
             "f32" => Some(ModelOutputDType::F32),
             _ => None,
         };
+
+        let dim = session.outputs[1]
+            .output_type
+            .tensor_dimensions()
+            .unwrap()
+            .last()
+            .unwrap()
+            .to_owned();
+        info!("outputs: {:?}", &session.outputs);
+        info!("output_dim: {dim}");
 
         // determine if the models needs token_type_ids
         let tti_name = "token_type_ids";
@@ -85,6 +97,7 @@ impl ModelTrait for BertONNX {
 
         self.model = Some(session);
         self.tokenizer = Some(tokenizer);
+        self.output_dim = Some(dim);
 
         Ok(())
     }
@@ -206,6 +219,13 @@ impl ONNXModelTrait for BertONNX {
     async fn output_dtype(&self) -> anyhow::Result<ModelOutputDType> {
         match self.output_dtype.clone() {
             Some(dtype) => Ok(dtype),
+            None => Err(Error::msg("model not loaded")),
+        }
+    }
+
+    async fn output_dim(&self) -> anyhow::Result<i64> {
+        match self.output_dim.clone() {
+            Some(dim) => Ok(dim),
             None => Err(Error::msg("model not loaded")),
         }
     }

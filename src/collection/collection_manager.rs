@@ -41,6 +41,3 @@ impl CollectionManager {
         configs
     }
 }
-
-unsafe impl Send for CollectionManager {}
-unsafe impl Sync for CollectionManager {}
