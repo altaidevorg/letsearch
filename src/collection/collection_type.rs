@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use usearch::{IndexOptions, MetricKind, ScalarKind};
 
@@ -185,7 +185,7 @@ impl Collection {
             }
         }
 
-        info!("Embedding texts took: {:?}", start.elapsed());
+        debug!("Embedding texts took: {:?}", start.elapsed());
         Ok(())
     }
 
@@ -198,8 +198,6 @@ impl Collection {
     ) -> anyhow::Result<()> {
         let num_batches = 4096 / batch_size;
         info!("Starting to index column '{column_name}' in batches of {batch_size}");
-
-        let start = Instant::now();
 
         {
             let mut indexes_guard = self.vector_index.write().await;
@@ -226,7 +224,24 @@ impl Collection {
             }
         }
 
+        let start = Instant::now();
+
         for batch in 0..num_batches {
+            let elapsed = start.elapsed();
+            let steps_completed = batch as f64;
+            let total_steps = num_batches as f64;
+            let eta = if steps_completed > 0.0 {
+                elapsed.mul_f64((total_steps - steps_completed) / steps_completed)
+            } else {
+                Duration::ZERO
+            };
+
+            // Format ETA as seconds
+
+            // print progress
+            print!("\r{} / {} batches - ETA: {:?}", batch, total_steps, eta);
+            std::io::Write::flush(&mut std::io::stdout()).unwrap();
+
             self.embed_column_with_offset(
                 column_name,
                 batch_size,
@@ -250,6 +265,7 @@ impl Collection {
             .save()
             .unwrap();
 
+        println!("");
         info!("Total duration: {:?}", start.elapsed());
 
         Ok(())

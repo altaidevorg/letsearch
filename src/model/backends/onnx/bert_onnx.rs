@@ -208,7 +208,7 @@ impl ONNXModelTrait for BertONNX {
             model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap()
         };
 
-        info!("actual inference took: {:?}", start.elapsed());
+        debug!("actual inference took: {:?}", start.elapsed());
 
         // Extract embeddings tensor.
         let embeddings_tensor = outputs[1]
