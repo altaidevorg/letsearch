@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use super::collection_utils::CollectionConfig;
+use super::collection_utils::{CollectionConfig, SearchResult};
 
 pub struct CollectionManager {
     collections: RwLock<HashMap<String, Arc<RwLock<Collection>>>>,
@@ -93,6 +93,22 @@ impl CollectionManager {
         configs
     }
 
+    pub async fn get_collection_config(
+        &self,
+        collection_name: String,
+    ) -> anyhow::Result<CollectionConfig> {
+        let collection = self
+            .collections
+            .read()
+            .await
+            .get(collection_name.as_str())
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Collection '{}' does not exist", collection_name))?;
+
+        let config = collection.read().await.config();
+        Ok(config)
+    }
+
     pub async fn import_jsonl(
         &self,
         collection_name: &str,
@@ -153,5 +169,49 @@ impl CollectionManager {
                 model_id,
             )
             .await
+    }
+
+    pub async fn search(
+        &self,
+        collection_name: String,
+        column_name: String,
+        query: String,
+        limit: u32,
+    ) -> anyhow::Result<Vec<SearchResult>> {
+        let collection = self
+            .collections
+            .read()
+            .await
+            .get(collection_name.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                return anyhow::anyhow!("Collection '{}' does not exist", collection_name);
+            })?;
+        let model_name = collection.read().await.config().model_name;
+        let model_id = self
+            .model_lookup
+            .read()
+            .await
+            .get(model_name.as_str())
+            .copied()
+            .ok_or_else(|| {
+                return anyhow::anyhow!(
+                    "Model requested by collection is not loaded. This should never happen"
+                );
+            })?;
+
+        let results = collection
+            .read()
+            .await
+            .search(
+                column_name,
+                query,
+                limit,
+                self.model_manager.clone(),
+                model_id,
+            )
+            .await?;
+
+        Ok(results)
     }
 }

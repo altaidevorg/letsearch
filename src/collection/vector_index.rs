@@ -1,9 +1,15 @@
 use anyhow;
 use log::{debug, info};
+use serde::Serialize;
 use std::path::PathBuf;
 use std::{fs, u64, usize};
 use usearch::{new_index, Index, IndexOptions};
 
+#[derive(Serialize)]
+pub struct SimilarityResult {
+    pub key: u64,
+    pub score: f32,
+}
 pub struct VectorIndex {
     pub index: Option<Index>,
     path: PathBuf,
@@ -77,5 +83,27 @@ impl VectorIndex {
         });
 
         Ok(())
+    }
+
+    pub async fn search(
+        &self,
+        vector: *const f32,
+        vector_dim: usize,
+        count: usize,
+    ) -> anyhow::Result<Vec<SimilarityResult>> {
+        let query_vector: &[f32] = unsafe { std::slice::from_raw_parts(vector, vector_dim) };
+        let index = self.index.as_ref().unwrap();
+        let matches = index.search(query_vector, count).unwrap();
+        let results: Vec<SimilarityResult> = matches
+            .keys
+            .iter()
+            .zip(matches.distances.iter())
+            .map(|(key, distance)| SimilarityResult {
+                key: *key,
+                score: 1.0 - distance,
+            })
+            .collect();
+
+        Ok(results)
     }
 }
