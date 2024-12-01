@@ -10,7 +10,7 @@ def test_connection_reuse_multiple_endpoints(base_url1, base_url2, n):
         response = client.get(base_url1)
         response.raise_for_status()
         print("First request time: {:.4f} seconds".format(time.time() - start))
-        results = httpx.post(
+        results = client.post(
             "http://localhost:7898/collections/test1/search",
             json={"query": "how are you", "column_name": "user"},
         )

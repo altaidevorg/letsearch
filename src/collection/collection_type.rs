@@ -3,7 +3,8 @@ use crate::collection::vector_index::VectorIndex;
 use crate::model::model_manager::ModelManager;
 use crate::model::model_utils::Embeddings;
 use anyhow::Error;
-use duckdb::arrow::array::StringArray;
+use duckdb::arrow::array::{PrimitiveArray, StringArray};
+use duckdb::arrow::datatypes::Int64Type;
 use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 use log::{debug, info};
@@ -94,15 +95,20 @@ impl Collection {
 
     pub async fn import_jsonl(&self, jsonl_path: &str) -> anyhow::Result<()> {
         let start = Instant::now();
-        let conn = self.conn.clone();
-        let conn_guard = conn.write().await;
-        conn_guard.execute_batch(
-            format!(
-                "CREATE TABLE {} AS SELECT * FROM read_json_auto('{}');",
-                &self.config.name, jsonl_path
-            )
-            .as_str(),
-        )?;
+        // prevent deadlock when add_keys_to_db is trying to acquire a lock
+        {
+            let conn = self.conn.clone();
+            let conn_guard = conn.write().await;
+            conn_guard.execute_batch(
+                format!(
+                    "CREATE TABLE {} AS SELECT * FROM read_json_auto('{}');",
+                    &self.config.name, jsonl_path
+                )
+                .as_str(),
+            )?;
+        }
+
+        self.add_keys_to_db().await?;
         info!(
             "Records imported from {:?} in {:?}",
             jsonl_path,
@@ -164,8 +170,8 @@ impl Collection {
         model_id: u32,
     ) -> anyhow::Result<()> {
         let start = Instant::now();
-        let texts = self
-            .get_single_column(column_name, batch_size, offset)
+        let (texts, keys) = self
+            .get_column_and_keys(column_name, batch_size, offset)
             .await
             .unwrap();
         debug!("getting texts from DB took: {:?}", start.elapsed());
@@ -181,13 +187,13 @@ impl Collection {
         match embeddings {
             Embeddings::F16(emb) => debug!("output shape: {:?}", emb.dim()),
             Embeddings::F32(emb) => {
-                let (num_vectors, vector_dim) = emb.dim();
-                let ids: Vec<_> = (offset..offset + num_vectors as u64).collect();
+                let (_, vector_dim) = emb.dim();
+
                 let indexes_guard = self.vector_index.read().await;
                 let index = indexes_guard.get(column_name).unwrap().clone();
                 let index_guard = index.write().await;
                 index_guard
-                    .add(&ids, emb.as_ptr(), vector_dim)
+                    .add(&keys, emb.as_ptr(), vector_dim)
                     .await
                     .unwrap();
 
@@ -337,6 +343,86 @@ impl Collection {
         };
 
         Ok(results)
+    }
+
+    async fn add_keys_to_db(&self) -> anyhow::Result<()> {
+        let conn = self.conn.clone();
+        let conn_guard = conn.read().await;
+
+        // Check if the '_key' column exists in the table
+        let query = format!(
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = '{}' AND column_name = '_key';",
+            self.config.name
+        );
+        let exists: bool = {
+            let mut stmt = conn_guard.prepare(&query)?;
+            let count: i64 = stmt.query_row([], |row| row.get(0))?;
+            count > 0
+        };
+
+        if !exists {
+            conn_guard.execute_batch(
+                format!(
+                    r"CREATE SEQUENCE keys_seq;
+    ALTER TABLE {} ADD COLUMN _key BIGINT DEFAULT NEXTVAL('keys_seq');
+    ",
+                    self.config.name,
+                )
+                .as_str(),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_column_and_keys(
+        &self,
+        column_name: &str,
+        batch_size: u64,
+        offset: u64,
+    ) -> anyhow::Result<(Vec<String>, Vec<u64>)> {
+        assert!(batch_size >= 1);
+        let conn = self.conn.clone();
+        let conn_guard = conn.read().await;
+
+        // Query the specified column and `_key` together
+        let mut stmt = conn_guard.prepare(
+            format!(
+                "SELECT {}, _key FROM {} LIMIT {} OFFSET {};",
+                column_name, &self.config.name, batch_size, offset
+            )
+            .as_str(),
+        )?;
+
+        let result: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
+        assert_eq!(result.len(), 1);
+        let batch = &result[0];
+
+        // Extract the specified column values
+        let col_array = batch
+            .column_by_name(column_name)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let col_values: Vec<String> = col_array
+            .iter()
+            .map(|s| s.unwrap().to_string())
+            .collect::<Vec<String>>();
+
+        // Extract `_key` values
+        let key_array = batch
+            .column_by_name("_key")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<PrimitiveArray<Int64Type>>()
+            .unwrap();
+        let keys: Vec<u64> = key_array
+            .iter()
+            .map(|key| key.unwrap_or(0) as u64)
+            .collect::<Vec<u64>>();
+
+        Ok((col_values, keys))
     }
 }
 
