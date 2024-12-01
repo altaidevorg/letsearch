@@ -7,8 +7,8 @@ use usearch::{new_index, Index, IndexOptions};
 
 #[derive(Serialize)]
 pub struct SimilarityResult {
-    key: u64,
-    score: f32,
+    pub key: u64,
+    pub score: f32,
 }
 pub struct VectorIndex {
     pub index: Option<Index>,

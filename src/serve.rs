@@ -2,7 +2,6 @@ use crate::collection::collection_manager::CollectionManager;
 use crate::collection::collection_utils::SearchResult;
 use actix_web::middleware::Logger;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
-use log::info;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tokio::sync::RwLock;

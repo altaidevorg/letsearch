@@ -7,7 +7,6 @@ use duckdb::arrow::array::StringArray;
 use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 use log::{debug, info};
-use serde::de::value::F32Deserializer;
 use serde_json;
 use std::collections::HashMap;
 use std::fs;
@@ -76,7 +75,10 @@ impl Collection {
         let vector_index = VectorIndex::from(index_path.to_path_buf())?;
         {
             let mut indexes_guard = vector_indexes.write().await;
-            indexes_guard.insert(name.clone(), Arc::new(RwLock::new(vector_index)));
+            indexes_guard.insert(
+                config.index_columns[0].clone(),
+                Arc::new(RwLock::new(vector_index)),
+            );
         }
 
         Ok(Collection {
@@ -296,25 +298,43 @@ impl Collection {
         model_manager: Arc<RwLock<ModelManager>>,
         model_id: u32,
     ) -> anyhow::Result<Vec<SearchResult>> {
-        let mut results = Vec::new();
-        results.push(SearchResult {
-            content: "this is a text".to_string(),
-            score: 0.5,
-        });
-
         let texts = vec![query.as_str()];
-        let embeddings = model_manager.read().await.predict(model_id, texts).await;
-        match embeddings {
-            Embeddings::F16(emb) => return anyhow::anyhow!("F16 is not implemented");
+        let embeddings = model_manager.read().await.predict(model_id, texts).await?;
+        let results = match embeddings {
+            Embeddings::F16(emb) => {
+                debug!("embedding dim: {:?}", emb.dim());
+                vec![SearchResult {
+                    content: "f16 is not implemented ye".to_string(),
+                    key: 1,
+                    score: 0.0,
+                }]
+            }
             Embeddings::F32(emb) => {
                 let (_, vector_dim) = emb.dim();
-                let index = self.vector_index.read().await.get(column_name.as_str()).ok_or_else(|| anyhow::anyhow!("Index not found for {}", column_name))?;
-                let similarity_results = index.read().await.search(emb.as_ptr(), vector_dim, limit as usize).await?;
-                let search_results = similarity_results.iter().map(|r| SearchResult {content: "content".to_string(), key: r.key, score: r.score}).collect();
+                let index = self
+                    .vector_index
+                    .read()
+                    .await
+                    .get(column_name.as_str())
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("Index not found for {}", column_name))?;
+                let similarity_results = index
+                    .read()
+                    .await
+                    .search(emb.as_ptr(), vector_dim, limit as usize)
+                    .await?;
+                let search_results = similarity_results
+                    .iter()
+                    .map(|r| SearchResult {
+                        content: "content".to_string(),
+                        key: r.key,
+                        score: r.score,
+                    })
+                    .collect();
 
+                search_results
             }
-        }
-
+        };
 
         Ok(results)
     }
