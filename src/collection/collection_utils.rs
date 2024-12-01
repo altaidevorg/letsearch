@@ -58,5 +58,6 @@ impl CollectionConfig {
 #[derive(Serialize)]
 pub struct SearchResult {
     pub content: String,
+    pub key: u64,
     pub score: f32,
 }

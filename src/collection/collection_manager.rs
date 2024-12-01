@@ -187,11 +187,29 @@ impl CollectionManager {
             .ok_or_else(|| {
                 return anyhow::anyhow!("Collection '{}' does not exist", collection_name);
             })?;
+        let model_name = collection.read().await.config().model_name;
+        let model_id = self
+            .model_lookup
+            .read()
+            .await
+            .get(model_name.as_str())
+            .copied()
+            .ok_or_else(|| {
+                return anyhow::anyhow!(
+                    "Model requested by collection is not loaded. This should never happen"
+                );
+            })?;
 
         let results = collection
             .read()
             .await
-            .search(column_name, query, limit)
+            .search(
+                column_name,
+                query,
+                limit,
+                self.model_manager.clone(),
+                model_id,
+            )
             .await?;
 
         Ok(results)

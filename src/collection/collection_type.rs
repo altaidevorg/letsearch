@@ -7,6 +7,7 @@ use duckdb::arrow::array::StringArray;
 use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 use log::{debug, info};
+use serde::de::value::F32Deserializer;
 use serde_json;
 use std::collections::HashMap;
 use std::fs;
@@ -292,12 +293,28 @@ impl Collection {
         column_name: String,
         query: String,
         limit: u32,
+        model_manager: Arc<RwLock<ModelManager>>,
+        model_id: u32,
     ) -> anyhow::Result<Vec<SearchResult>> {
         let mut results = Vec::new();
         results.push(SearchResult {
             content: "this is a text".to_string(),
             score: 0.5,
         });
+
+        let texts = vec![query.as_str()];
+        let embeddings = model_manager.read().await.predict(model_id, texts).await;
+        match embeddings {
+            Embeddings::F16(emb) => return anyhow::anyhow!("F16 is not implemented");
+            Embeddings::F32(emb) => {
+                let (_, vector_dim) = emb.dim();
+                let index = self.vector_index.read().await.get(column_name.as_str()).ok_or_else(|| anyhow::anyhow!("Index not found for {}", column_name))?;
+                let similarity_results = index.read().await.search(emb.as_ptr(), vector_dim, limit as usize).await?;
+                let search_results = similarity_results.iter().map(|r| SearchResult {content: "content".to_string(), key: r.key, score: r.score}).collect();
+
+            }
+        }
+
 
         Ok(results)
     }
