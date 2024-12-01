@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use usearch::{IndexOptions, MetricKind, ScalarKind};
 
+use super::collection_utils::SearchResult;
+
 pub struct Collection {
     config: CollectionConfig,
     conn: Arc<RwLock<Connection>>,
@@ -283,6 +285,21 @@ impl Collection {
 
     pub async fn requested_models(&self) -> Vec<String> {
         vec![self.config.model_name.clone()]
+    }
+
+    pub async fn search(
+        &self,
+        column_name: String,
+        query: String,
+        limit: u32,
+    ) -> anyhow::Result<Vec<SearchResult>> {
+        let mut results = Vec::new();
+        results.push(SearchResult {
+            content: "this is a text".to_string(),
+            score: 0.5,
+        });
+
+        Ok(results)
     }
 }
 

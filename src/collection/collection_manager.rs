@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use super::collection_utils::CollectionConfig;
+use super::collection_utils::{CollectionConfig, SearchResult};
 
 pub struct CollectionManager {
     collections: RwLock<HashMap<String, Arc<RwLock<Collection>>>>,
@@ -169,5 +169,31 @@ impl CollectionManager {
                 model_id,
             )
             .await
+    }
+
+    pub async fn search(
+        &self,
+        collection_name: String,
+        column_name: String,
+        query: String,
+        limit: u32,
+    ) -> anyhow::Result<Vec<SearchResult>> {
+        let collection = self
+            .collections
+            .read()
+            .await
+            .get(collection_name.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                return anyhow::anyhow!("Collection '{}' does not exist", collection_name);
+            })?;
+
+        let results = collection
+            .read()
+            .await
+            .search(column_name, query, limit)
+            .await?;
+
+        Ok(results)
     }
 }

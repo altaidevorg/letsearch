@@ -1,10 +1,10 @@
-use std::time::{Duration, Instant};
-
 use crate::collection::collection_manager::CollectionManager;
+use crate::collection::collection_utils::SearchResult;
 use actix_web::middleware::Logger;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use log::info;
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 use tokio::sync::RwLock;
 
 #[derive(Serialize)]
@@ -26,15 +26,15 @@ impl ErrorResponse {
 
 #[derive(Serialize)]
 struct SuccessResponse<T: Serialize> {
-    result: T,
+    data: T,
     status: String,
     time: f64,
 }
 
 impl<T: Serialize> SuccessResponse<T> {
-    fn new(result: T, start: Instant) -> Self {
+    fn new(data: T, start: Instant) -> Self {
         SuccessResponse {
-            result: result,
+            data: data,
             status: "ok".to_string(),
             time: start.elapsed().as_secs_f64(),
         }
@@ -43,8 +43,9 @@ impl<T: Serialize> SuccessResponse<T> {
 
 #[derive(Deserialize)]
 struct QueryRequest {
+    column_name: String,
     query: String,
-    count: Option<i32>,
+    limit: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -65,18 +66,28 @@ struct CollectionsResponse {
     collections: Vec<CollectionConfigPresentable>,
 }
 
+#[derive(Serialize)]
+struct SearchResultsResponse {
+    results: Vec<SearchResult>,
+}
+
 async fn healthcheck(manager: web::Data<RwLock<CollectionManager>>) -> impl Responder {
+    let start = Instant::now();
     let manager_guard = manager.read().await;
     let collections = manager_guard.get_collections().await;
-    let response = HelthcheckResponse {
-        version: "0.1.0".to_string(),
-        status: "ok".to_string(),
-        collections: collections,
-    };
+    let response = SuccessResponse::new(
+        HelthcheckResponse {
+            version: "0.1.0".to_string(),
+            status: "ok".to_string(),
+            collections: collections,
+        },
+        start,
+    );
     HttpResponse::Ok().json(response)
 }
 
 async fn get_collections(manager: web::Data<RwLock<CollectionManager>>) -> impl Responder {
+    let start = Instant::now();
     let configs = manager.read().await.get_collection_configs().await;
     let configs_presentable = configs
         .iter()
@@ -85,9 +96,12 @@ async fn get_collections(manager: web::Data<RwLock<CollectionManager>>) -> impl 
             index_columns: c.index_columns.to_vec(),
         })
         .collect();
-    let response = CollectionsResponse {
-        collections: configs_presentable,
-    };
+    let response = SuccessResponse::new(
+        CollectionsResponse {
+            collections: configs_presentable,
+        },
+        start,
+    );
     HttpResponse::Ok().json(response)
 }
 
@@ -115,14 +129,32 @@ async fn get_collection(
 async fn search(
     collection_name: web::Path<String>,
     req: web::Json<QueryRequest>,
+    manager: web::Data<RwLock<CollectionManager>>,
 ) -> impl Responder {
+    let start = Instant::now();
     let name = collection_name.into_inner();
-    info!("collection_name: {:?}", name);
-    let query = &req.query;
-    let count = req.count.unwrap_or(10);
-    info!("got {query}");
-    info!("got count: {count}");
-    HttpResponse::Ok().body("ok")
+    let limit = req.limit.unwrap_or(10);
+    if limit < 1 || limit > 100 {
+        return HttpResponse::BadRequest().json(ErrorResponse::new(
+            String::from("Limit should be between 1 and 100"),
+            start,
+        ));
+    }
+
+    let results = manager
+        .read()
+        .await
+        .search(name, req.column_name.clone(), req.query.clone(), limit)
+        .await;
+    let response = match results {
+        Ok(results) => HttpResponse::Ok().json(SuccessResponse::new(
+            SearchResultsResponse { results: results },
+            start,
+        )),
+        Err(e) => HttpResponse::NotFound().json(ErrorResponse::new(e.to_string(), start)),
+    };
+
+    response
 }
 
 pub async fn run_server(host: String, port: i32, collection_name: String) -> std::io::Result<()> {
