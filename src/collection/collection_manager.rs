@@ -93,6 +93,22 @@ impl CollectionManager {
         configs
     }
 
+    pub async fn get_collection_config(
+        &self,
+        collection_name: String,
+    ) -> anyhow::Result<CollectionConfig> {
+        let collection = self
+            .collections
+            .read()
+            .await
+            .get(collection_name.as_str())
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Collection '{}' does not exist", collection_name))?;
+
+        let config = collection.read().await.config();
+        Ok(config)
+    }
+
     pub async fn import_jsonl(
         &self,
         collection_name: &str,
