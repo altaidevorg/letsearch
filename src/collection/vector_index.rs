@@ -10,6 +10,7 @@ pub struct SimilarityResult {
     pub key: u64,
     pub score: f32,
 }
+
 pub struct VectorIndex {
     pub index: Option<Index>,
     path: PathBuf,
