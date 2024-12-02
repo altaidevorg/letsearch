@@ -118,6 +118,32 @@ impl Collection {
         Ok(())
     }
 
+    pub async fn import_parquet(&self, parquet_path: &str) -> anyhow::Result<()> {
+        let start = Instant::now();
+        // prevent deadlock when add_keys_to_db is trying to acquire a lock
+        {
+            let conn = self.conn.clone();
+            let conn_guard = conn.write().await;
+            conn_guard.execute_batch(
+                format!(
+                    "CREATE TABLE {} AS SELECT * FROM read_parquet('{}', filename = true);",
+                    &self.config.name, parquet_path
+                )
+                .as_str(),
+            )?;
+        }
+
+        self.add_keys_to_db().await?;
+        info!(
+            "Records imported from {:?} in {:?}",
+            parquet_path,
+            start.elapsed()
+        );
+
+        Ok(())
+    }
+
+    #[allow(dead_code)]
     pub async fn get_single_column(
         &self,
         column_name: &str,
@@ -172,8 +198,7 @@ impl Collection {
         let start = Instant::now();
         let (texts, keys) = self
             .get_column_and_keys(column_name, batch_size, offset)
-            .await
-            .unwrap();
+            .await?;
         debug!("getting texts from DB took: {:?}", start.elapsed());
         let start = Instant::now();
         let inputs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
@@ -212,8 +237,16 @@ impl Collection {
         model_manager: Arc<RwLock<ModelManager>>,
         model_id: u32,
     ) -> anyhow::Result<()> {
-        let num_batches = (4096 + batch_size - 1) / batch_size;
-        info!("Starting to index column '{column_name}' in batches of {batch_size}");
+        let count: u64 = {
+            let conn_guard = self.conn.read().await;
+            let query = format!("SELECT COUNT('{}') FROM {};", column_name, self.config.name);
+            let mut stmt = conn_guard.prepare(&query)?;
+            let count: i64 = stmt.query_row([], |row| row.get(0))?;
+
+            count as u64
+        };
+        let num_batches = (count + batch_size - 1) / batch_size;
+        info!("Starting to index {count} records from column '{column_name}' in batches of {batch_size}");
 
         {
             let mut indexes_guard = self.vector_index.write().await;

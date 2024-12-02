@@ -104,10 +104,16 @@ async fn main() -> anyhow::Result<()> {
                 .create_collection(config, overwrite.to_owned())
                 .await?;
             info!("Collection '{}' created", collection_name);
-            let jsonl_path = &files[0];
-            collection_manager
-                .import_jsonl(&collection_name, jsonl_path)
-                .await?;
+            let file_path = &files[0];
+            if file_path.ends_with(".jsonl") {
+                collection_manager
+                    .import_jsonl(&collection_name, file_path)
+                    .await?;
+            } else if file_path.ends_with(".parquet") {
+                collection_manager
+                    .import_parquet(&collection_name, file_path)
+                    .await?;
+            }
 
             if !index_columns.is_empty() {
                 collection_manager

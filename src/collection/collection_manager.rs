@@ -134,6 +134,31 @@ impl CollectionManager {
         collection_guard.import_jsonl(jsonl_path).await
     }
 
+    pub async fn import_parquet(
+        &self,
+        collection_name: &str,
+        parquet_path: &str,
+    ) -> anyhow::Result<()> {
+        // Acquire a read lock on the collections map
+        let collection = {
+            let collections_guard = self.collections.read().await;
+
+            match collections_guard.get(collection_name) {
+                Some(collection) => collection.clone(),
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Collection '{}' does not exist",
+                        collection_name
+                    ));
+                }
+            }
+        };
+
+        // Acquire a write lock on the collection and call import_jsonl
+        let collection_guard = collection.write().await;
+        collection_guard.import_parquet(parquet_path).await
+    }
+
     pub async fn embed_column(
         &self,
         collection_name: &str,

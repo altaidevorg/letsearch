@@ -15,3 +15,8 @@
 1. Add key column in duckdb
 2. get data from DB after vector search
 3. Allow multiple column index
+
+## Test command
+```sh
+cargo run -- index -m ../altaidemo/model/minilm -c test1 hf://datasets/neural-bridge/rag-dataset-12000/**/*.parquet --overwrite -b 128 -i context
+```
