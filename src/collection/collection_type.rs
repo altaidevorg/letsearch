@@ -143,23 +143,34 @@ impl Collection {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub async fn get_single_column(
         &self,
         column_name: &str,
         batch_size: u64,
         offset: u64,
+        keys: Vec<u64>,
     ) -> anyhow::Result<Vec<String>> {
         assert!(batch_size >= 1);
         let conn = self.conn.clone();
         let conn_guard = conn.read().await;
-        let mut stmt = conn_guard.prepare(
+        let query = if keys.is_empty() {
             format!(
                 "SELECT {} FROM {} LIMIT {} OFFSET {};",
                 column_name, &self.config.name, batch_size, offset
             )
-            .as_str(),
-        )?;
+        } else {
+            let keys_str = keys
+                .iter()
+                .map(|key| key.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "SELECT {} FROM {} WHERE _key IN ({}) LIMIT {} OFFSET {};",
+                column_name, &self.config.name, &keys_str, batch_size, offset,
+            )
+        };
+
+        let mut stmt = conn_guard.prepare(&query)?;
         let result: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
         assert_eq!(result.len(), 1);
         let batch = &result[0];
@@ -362,12 +373,23 @@ impl Collection {
                     .await
                     .search(emb.as_ptr(), vector_dim, limit as usize)
                     .await?;
+                let similar_keys: Vec<u64> = similarity_results.iter().map(|r| r.key).collect();
+                let contents = self
+                    .get_single_column(
+                        column_name.as_str(),
+                        similar_keys.len() as u64,
+                        0,
+                        similar_keys,
+                    )
+                    .await?;
+
                 let search_results = similarity_results
                     .iter()
-                    .map(|r| SearchResult {
-                        content: "content".to_string(),
-                        key: r.key,
-                        score: r.score,
+                    .zip(contents.iter())
+                    .map(|(result, content)| SearchResult {
+                        content: content.to_string(),
+                        key: result.key,
+                        score: result.score,
                     })
                     .collect();
 
