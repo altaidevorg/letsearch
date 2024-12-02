@@ -3,13 +3,14 @@ use log::{debug, info};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::{fs, u64, usize};
-use usearch::{new_index, Index, IndexOptions};
+use usearch::{new_index, Index, IndexOptions, VectorType};
 
 #[derive(Serialize)]
 pub struct SimilarityResult {
     pub key: u64,
     pub score: f32,
 }
+
 pub struct VectorIndex {
     pub index: Option<Index>,
     path: PathBuf,
@@ -67,10 +68,10 @@ impl VectorIndex {
         Ok(())
     }
 
-    pub async fn add(
+    pub async fn add<T: VectorType>(
         &self,
         keys: &Vec<u64>,
-        vectors: *const f32,
+        vectors: *const T,
         vector_dim: usize,
     ) -> anyhow::Result<()> {
         let index = self.index.as_ref().unwrap();
@@ -78,20 +79,20 @@ impl VectorIndex {
         // TODO: parallelize with tokio_stream later on
         keys.iter().enumerate().for_each(|(i, _key)| {
             let vector_offset = unsafe { vectors.add(i * vector_dim) };
-            let vector: &[f32] = unsafe { std::slice::from_raw_parts(vector_offset, vector_dim) };
+            let vector: &[T] = unsafe { std::slice::from_raw_parts(vector_offset, vector_dim) };
             index.add(keys[i], vector).unwrap();
         });
 
         Ok(())
     }
 
-    pub async fn search(
+    pub async fn search<T: VectorType>(
         &self,
-        vector: *const f32,
+        vector: *const T,
         vector_dim: usize,
         count: usize,
     ) -> anyhow::Result<Vec<SimilarityResult>> {
-        let query_vector: &[f32] = unsafe { std::slice::from_raw_parts(vector, vector_dim) };
+        let query_vector: &[T] = unsafe { std::slice::from_raw_parts(vector, vector_dim) };
         let index = self.index.as_ref().unwrap();
         let matches = index.search(query_vector, count)?;
         let results: Vec<SimilarityResult> = matches

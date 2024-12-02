@@ -56,7 +56,7 @@ if __name__ == "__main__":
     if args.test_reuse:
         test_connection_reuse_multiple_endpoints(
             "http://localhost:7898/collections",
-            "http://localhost:7898/collections",
+            "http://localhost:7898/collections/test1",
             10,
         )
 

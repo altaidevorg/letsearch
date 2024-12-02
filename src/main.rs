@@ -11,8 +11,8 @@ use std::io::Write;
 /// CLI application for indexing and searching documents
 #[derive(Parser, Debug)]
 #[command(
-    name = "letsearche",
-    version = "0.1.0",
+    name = "letsearch",
+    version = "0.1.2",
     author = "yusufsarigoz@gmail.com",
     about = "Index and search your documents, and serve it if you wish",
     subcommand_required = true,
@@ -27,27 +27,32 @@ pub struct Cli {
 pub enum Commands {
     /// Index documents
     Index {
-        /// Path to files to index
-        #[arg(required = true, num_args(1..), action = clap::ArgAction::Append)]
-        files: Vec<String>,
+        /// Path to file(s) to index.
+        /// You can provide local or hf://datasets paths.
+        /// It might be  a regular  path (absolute
+        /// or relative), or a glob pattern.
+        #[arg(required = true)]
+        files: String,
 
         /// name of the collection to be created
         #[arg(short, long, required = true)]
         collection_name: String,
 
         /// Model to create embeddings
-        #[arg(short, long, default_value = "minilm")]
+        #[arg(short, long, required = true)]
         model: String,
 
         /// batch size when embedding texts
         #[arg(short, long, default_value = "32")]
         batch_size: u64,
 
-        /// columns to embed and index for vector search
+        /// columns to embed and index for vector search.
+        /// You can provide this option multiple times
+        /// for multi-column indexing.
         #[arg(short, long, action = clap::ArgAction::Append)]
         index_columns: Vec<String>,
 
-        /// remove and re-create collection directory if it exists
+        /// remove and re-create collection if it exists
         #[arg(long, action=clap::ArgAction::SetTrue)]
         overwrite: bool,
     },
@@ -104,21 +109,23 @@ async fn main() -> anyhow::Result<()> {
                 .create_collection(config, overwrite.to_owned())
                 .await?;
             info!("Collection '{}' created", collection_name);
-            let file_path = &files[0];
-            if file_path.ends_with(".jsonl") {
+
+            if files.ends_with(".jsonl") {
                 collection_manager
-                    .import_jsonl(&collection_name, file_path)
+                    .import_jsonl(&collection_name, files)
                     .await?;
-            } else if file_path.ends_with(".parquet") {
+            } else if files.ends_with(".parquet") {
                 collection_manager
-                    .import_parquet(&collection_name, file_path)
+                    .import_parquet(&collection_name, files)
                     .await?;
             }
 
             if !index_columns.is_empty() {
-                collection_manager
-                    .embed_column(&collection_name, &index_columns[0], batch_size.to_owned())
-                    .await?;
+                for column_name in index_columns {
+                    collection_manager
+                        .embed_column(&collection_name, column_name, batch_size.to_owned())
+                        .await?;
+                }
             }
         }
 
