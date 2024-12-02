@@ -12,7 +12,11 @@
 11. finetune embedding models
 
 ## TODO for search
-1. Add `model_name` field to `CollectionConfig`.
-2. Add `requested_models() -> Vec<String>` to `Collection` to return the model names to load.
-3. Introduce a `ModelManager` field to `CollectionManager` and update `CollectionManager::load_collection()` to load models requested by `Collection`.
-4. implement `CollectionManager::search(collection_name: String, column_name: String, num_results)` that will call Collection::search(model_manager, model_id, column_name, query, num_results)
+1. Add key column in duckdb
+2. get data from DB after vector search
+3. Allow multiple column index
+
+## Test command
+```sh
+cargo run -- index -m ../altaidemo/model/minilm -c test1 hf://datasets/neural-bridge/rag-dataset-12000/**/*.parquet --overwrite -b 128 -i context
+```

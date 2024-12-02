@@ -93,7 +93,7 @@ impl VectorIndex {
     ) -> anyhow::Result<Vec<SimilarityResult>> {
         let query_vector: &[f32] = unsafe { std::slice::from_raw_parts(vector, vector_dim) };
         let index = self.index.as_ref().unwrap();
-        let matches = index.search(query_vector, count).unwrap();
+        let matches = index.search(query_vector, count)?;
         let results: Vec<SimilarityResult> = matches
             .keys
             .iter()
