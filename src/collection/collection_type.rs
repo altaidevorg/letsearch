@@ -4,7 +4,7 @@ use crate::model::model_manager::ModelManager;
 use crate::model::model_utils::Embeddings;
 use anyhow::Error;
 use duckdb::arrow::array::{PrimitiveArray, StringArray};
-use duckdb::arrow::datatypes::Int64Type;
+use duckdb::arrow::datatypes::UInt64Type;
 use duckdb::arrow::record_batch::RecordBatch;
 use duckdb::Connection;
 use log::{debug, info};
@@ -15,6 +15,7 @@ use std::fs::File;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+use usearch::f16 as UsearchF16;
 use usearch::{IndexOptions, MetricKind, ScalarKind};
 
 use super::collection_utils::SearchResult;
@@ -146,17 +147,17 @@ impl Collection {
     pub async fn get_single_column(
         &self,
         column_name: &str,
-        batch_size: u64,
+        limit: u64,
         offset: u64,
         keys: Vec<u64>,
     ) -> anyhow::Result<Vec<String>> {
-        assert!(batch_size >= 1);
+        assert!(limit >= 1);
         let conn = self.conn.clone();
         let conn_guard = conn.read().await;
         let query = if keys.is_empty() {
             format!(
                 "SELECT {} FROM {} LIMIT {} OFFSET {};",
-                column_name, &self.config.name, batch_size, offset
+                column_name, &self.config.name, limit, offset
             )
         } else {
             let keys_str = keys
@@ -166,7 +167,7 @@ impl Collection {
                 .join(", ");
             format!(
                 "SELECT {} FROM {} WHERE _key IN ({}) LIMIT {} OFFSET {};",
-                column_name, &self.config.name, &keys_str, batch_size, offset,
+                column_name, &self.config.name, &keys_str, limit, offset,
             )
         };
 
@@ -174,18 +175,9 @@ impl Collection {
         let result: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
         assert_eq!(result.len(), 1);
         let batch = &result[0];
-        //let num_rows = batch.num_rows();
-        //let num_cols = batch.num_columns();
 
-        let schema = batch.schema();
-        let column_names: Vec<&str> = schema
-            .fields
-            .iter()
-            .map(|f| f.name().as_str())
-            .collect::<Vec<&str>>();
-        let col = &column_names[0];
         let col_array = batch
-            .column_by_name(col)
+            .column_by_name(column_name)
             .unwrap()
             .as_any()
             .downcast_ref::<StringArray>()
@@ -221,7 +213,17 @@ impl Collection {
             .unwrap();
 
         match embeddings {
-            Embeddings::F16(emb) => debug!("output shape: {:?}", emb.dim()),
+            Embeddings::F16(emb) => {
+                let (_, vector_dim) = emb.dim();
+
+                let indexes_guard = self.vector_index.read().await;
+                let index = indexes_guard.get(column_name).unwrap().clone();
+                let index_guard = index.write().await;
+                index_guard
+                    .add::<UsearchF16>(&keys, emb.as_ptr() as *const UsearchF16, vector_dim)
+                    .await
+                    .unwrap();
+            }
             Embeddings::F32(emb) => {
                 let (_, vector_dim) = emb.dim();
 
@@ -229,7 +231,7 @@ impl Collection {
                 let index = indexes_guard.get(column_name).unwrap().clone();
                 let index_guard = index.write().await;
                 index_guard
-                    .add(&keys, emb.as_ptr(), vector_dim)
+                    .add::<f32>(&keys, emb.as_ptr(), vector_dim)
                     .await
                     .unwrap();
 
@@ -350,54 +352,63 @@ impl Collection {
     ) -> anyhow::Result<Vec<SearchResult>> {
         let texts = vec![query.as_str()];
         let embeddings = model_manager.read().await.predict(model_id, texts).await?;
-        let results = match embeddings {
+
+        let similarity_results = match embeddings {
             Embeddings::F16(emb) => {
-                debug!("embedding dim: {:?}", emb.dim());
-                vec![SearchResult {
-                    content: "f16 is not implemented ye".to_string(),
-                    key: 1,
-                    score: 0.0,
-                }]
-            }
-            Embeddings::F32(emb) => {
                 let (_, vector_dim) = emb.dim();
-                let index = self
-                    .vector_index
+
+                self.vector_index
                     .read()
                     .await
                     .get(column_name.as_str())
                     .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("Index not found for {}", column_name))?;
-                let similarity_results = index
+                    .ok_or_else(|| anyhow::anyhow!("Index not found for {}", column_name))?
                     .read()
                     .await
-                    .search(emb.as_ptr(), vector_dim, limit as usize)
-                    .await?;
-                let similar_keys: Vec<u64> = similarity_results.iter().map(|r| r.key).collect();
-                let contents = self
-                    .get_single_column(
-                        column_name.as_str(),
-                        similar_keys.len() as u64,
-                        0,
-                        similar_keys,
+                    .search::<UsearchF16>(
+                        emb.as_ptr() as *const UsearchF16,
+                        vector_dim,
+                        limit as usize,
                     )
-                    .await?;
+                    .await?
+            }
+            Embeddings::F32(emb) => {
+                let (_, vector_dim) = emb.dim();
 
-                let search_results = similarity_results
-                    .iter()
-                    .zip(contents.iter())
-                    .map(|(result, content)| SearchResult {
-                        content: content.to_string(),
-                        key: result.key,
-                        score: result.score,
-                    })
-                    .collect();
-
-                search_results
+                self.vector_index
+                    .read()
+                    .await
+                    .get(column_name.as_str())
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("Index not found for {}", column_name))?
+                    .read()
+                    .await
+                    .search::<f32>(emb.as_ptr(), vector_dim, limit as usize)
+                    .await?
             }
         };
 
-        Ok(results)
+        let similar_keys: Vec<u64> = similarity_results.iter().map(|r| r.key).collect();
+        let contents = self
+            .get_single_column(
+                column_name.as_str(),
+                similar_keys.len() as u64,
+                0,
+                similar_keys,
+            )
+            .await?;
+
+        let search_results = similarity_results
+            .iter()
+            .zip(contents.iter())
+            .map(|(result, content)| SearchResult {
+                content: content.to_string(),
+                key: result.key,
+                score: result.score,
+            })
+            .collect();
+
+        Ok(search_results)
     }
 
     async fn add_keys_to_db(&self) -> anyhow::Result<()> {
@@ -419,7 +430,7 @@ impl Collection {
             conn_guard.execute_batch(
                 format!(
                     r"CREATE SEQUENCE keys_seq;
-    ALTER TABLE {} ADD COLUMN _key BIGINT DEFAULT NEXTVAL('keys_seq');
+    ALTER TABLE {} ADD COLUMN _key UBIGINT DEFAULT NEXTVAL('keys_seq');
     ",
                     self.config.name,
                 )
@@ -433,10 +444,10 @@ impl Collection {
     pub async fn get_column_and_keys(
         &self,
         column_name: &str,
-        batch_size: u64,
+        limit: u64,
         offset: u64,
     ) -> anyhow::Result<(Vec<String>, Vec<u64>)> {
-        assert!(batch_size >= 1);
+        assert!(limit >= 1);
         let conn = self.conn.clone();
         let conn_guard = conn.read().await;
 
@@ -444,7 +455,7 @@ impl Collection {
         let mut stmt = conn_guard.prepare(
             format!(
                 "SELECT {}, _key FROM {} LIMIT {} OFFSET {};",
-                column_name, &self.config.name, batch_size, offset
+                column_name, &self.config.name, limit, offset
             )
             .as_str(),
         )?;
@@ -470,12 +481,9 @@ impl Collection {
             .column_by_name("_key")
             .unwrap()
             .as_any()
-            .downcast_ref::<PrimitiveArray<Int64Type>>()
+            .downcast_ref::<PrimitiveArray<UInt64Type>>()
             .unwrap();
-        let keys: Vec<u64> = key_array
-            .iter()
-            .map(|key| key.unwrap_or(0) as u64)
-            .collect::<Vec<u64>>();
+        let keys: Vec<u64> = key_array.iter().map(|key| key.unwrap_or(0)).collect();
 
         Ok((col_values, keys))
     }
