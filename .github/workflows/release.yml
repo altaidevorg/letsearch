@@ -37,5 +37,5 @@ jobs:
       uses: ncipollo/release-action@v1
       with:
         artifacts: target/release/letsearch
-        token: ${{ secrets.GITHUB_TOKEN }}
+        #token: ${{ secrets.GITHUB_TOKEN }}
         tag: ${{ github.ref_name }}
