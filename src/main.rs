@@ -12,7 +12,7 @@ use std::io::Write;
 #[derive(Parser, Debug)]
 #[command(
     name = "letsearch",
-    version = "0.1.9,
+    version = "0.1.9",
     author = "yusufsarigoz@gmail.com",
     about = "Index and search your documents, and serve it if you wish",
     subcommand_required = true,
