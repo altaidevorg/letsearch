@@ -11,7 +11,7 @@ env:
 jobs:
   build:
     name: Build and Release Binaries
-    if: startsWith(github.ref, 'refs/tags/') && github.ref_name != '' && github.base_name == 'main'
+    if: github.ref_name == 'main'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
