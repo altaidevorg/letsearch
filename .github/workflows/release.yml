@@ -11,15 +11,23 @@ env:
 jobs:
   build:
     name: Build and Release Binaries
-    if: github.ref_name == 'main'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
-        
+
     steps:
     - name: Checkout Repository
       uses: actions/checkout@v4
+
+    - name: Verify Tag Belongs to Main
+      run: |
+        DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+        CURRENT_BRANCH=$(git branch --contains "${GITHUB_SHA}" | grep "${DEFAULT_BRANCH}" || true)
+        if [ -z "$CURRENT_BRANCH" ]; then
+          echo "This tag is not on the main branch. Skipping."
+          exit 1
+        fi
 
     - name: Install Rust Toolchain
       uses: actions-rs/toolchain@v1
