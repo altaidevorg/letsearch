@@ -340,8 +340,11 @@ impl Collection {
         Ok(())
     }
 
-    pub async fn requested_models(&self) -> Vec<String> {
-        vec![self.config.model_name.clone()]
+    pub async fn requested_models(&self) -> Vec<(String, String)> {
+        vec![(
+            self.config.model_name.clone(),
+            self.config.model_variant.clone(),
+        )]
     }
 
     pub async fn search(
