@@ -33,8 +33,8 @@ impl BertONNX {
 
 #[async_trait]
 impl ModelTrait for BertONNX {
-    async fn load_model(&mut self, model_path: &str) -> anyhow::Result<()> {
-        let model_source_path = Path::new(model_path);
+    async fn load_model(&mut self, model_dir: &str, model_file: &str) -> anyhow::Result<()> {
+        let model_source_path = Path::new(model_dir);
         ort::init()
             .with_name("onnx_model")
             .with_execution_providers([CPUExecutionProvider::default().build()])
@@ -47,11 +47,10 @@ impl ModelTrait for BertONNX {
             .unwrap()
             .with_intra_threads(available_parallelism()?.get())
             .unwrap()
-            .commit_from_file(Path::join(model_source_path, "model.onnx"))
+            .commit_from_file(model_source_path.join(model_file))
             .unwrap();
 
-        let mut tokenizer =
-            Tokenizer::from_file(Path::join(model_source_path, "tokenizer.json")).unwrap();
+        let mut tokenizer = Tokenizer::from_file(model_source_path.join("tokenizer.json")).unwrap();
 
         tokenizer.with_padding(Some(PaddingParams {
             strategy: tokenizers::PaddingStrategy::BatchLongest,
@@ -61,8 +60,6 @@ impl ModelTrait for BertONNX {
             direction: tokenizers::PaddingDirection::Right,
             pad_token: "<pad>".into(),
         }));
-
-        info!("Model loaded from {}", model_path);
 
         // TODO: instead of using a hardcoded index,
         // use .filter to get the output tensor by name

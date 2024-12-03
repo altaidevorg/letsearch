@@ -12,7 +12,7 @@ use std::io::Write;
 #[derive(Parser, Debug)]
 #[command(
     name = "letsearch",
-    version = "0.1.2",
+    version = "0.1.9",
     author = "yusufsarigoz@gmail.com",
     about = "Index and search your documents, and serve it if you wish",
     subcommand_required = true,
@@ -38,9 +38,18 @@ pub enum Commands {
         #[arg(short, long, required = true)]
         collection_name: String,
 
-        /// Model to create embeddings
+        /// Model to create embeddings.
+        /// You can also give a hf:// path and it will be automatically  downloaded.
         #[arg(short, long, required = true)]
         model: String,
+
+        /// model variant. f32, f16 and i8 are supported for now.
+        #[arg(short, long, default_value = "f32")]
+        variant: String,
+
+        /// HuggingFace token. Only needed when you want to access private repos
+        #[arg(long)]
+        hf_token: Option<String>,
 
         /// batch size when embedding texts
         #[arg(short, long, default_value = "32")]
@@ -70,6 +79,10 @@ pub enum Commands {
         /// port to listen to
         #[arg(short, long, default_value = "7898")]
         port: i32,
+
+        /// HuggingFace token. Only needed when you want to access private repos
+        #[arg(long)]
+        hf_token: Option<String>,
     },
 }
 
@@ -96,6 +109,8 @@ async fn main() -> anyhow::Result<()> {
             files,
             collection_name,
             model,
+            variant,
+            hf_token,
             batch_size,
             index_columns,
             overwrite,
@@ -104,7 +119,8 @@ async fn main() -> anyhow::Result<()> {
             config.name = collection_name.to_string();
             config.index_columns = index_columns.to_vec();
             config.model_name = model.to_string();
-            let collection_manager = CollectionManager::new();
+            config.model_variant = variant.to_string();
+            let collection_manager = CollectionManager::new(hf_token.to_owned());
             collection_manager
                 .create_collection(config, overwrite.to_owned())
                 .await?;
@@ -133,11 +149,13 @@ async fn main() -> anyhow::Result<()> {
             collection_name,
             host,
             port,
+            hf_token,
         } => {
             run_server(
                 host.to_string(),
                 port.to_owned(),
                 collection_name.to_string(),
+                hf_token.to_owned(),
             )
             .await?;
         }
@@ -147,5 +165,6 @@ async fn main() -> anyhow::Result<()> {
 }
 
 mod collection;
+mod hf_ops;
 mod model;
 mod serve;
