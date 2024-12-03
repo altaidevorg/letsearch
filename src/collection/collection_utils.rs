@@ -19,6 +19,8 @@ pub struct CollectionConfig {
     pub model_name: String,
     #[serde(default = "default_db_path")]
     pub db_path: String,
+    #[serde(default = "default_index_dir")]
+    pub index_dir: String,
     #[serde(default = "default_serialization_version")]
     pub serialization_version: u32,
 }
@@ -39,6 +41,10 @@ fn default_db_path() -> String {
     String::from("data.db")
 }
 
+fn default_index_dir() -> String {
+    String::from("index")
+}
+
 fn default_serialization_version() -> u32 {
     1
 }
@@ -50,6 +56,7 @@ impl CollectionConfig {
             index_columns: default_index_columns(),
             model_name: default_model_name(),
             db_path: default_db_path(),
+            index_dir: default_index_dir(),
             serialization_version: default_serialization_version(),
         }
     }

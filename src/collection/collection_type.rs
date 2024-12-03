@@ -70,17 +70,19 @@ impl Collection {
         let config_file = File::open(config_path).unwrap();
         let config: CollectionConfig = serde_json::from_reader(config_file)?;
         let conn = Connection::open(collection_dir.join(config.db_path.as_str()))?;
-        let index_path = collection_dir
-            .join("index")
-            .join(config.index_columns[0].as_str());
+
         let vector_indexes = RwLock::new(HashMap::new());
-        let vector_index = VectorIndex::from(index_path.to_path_buf())?;
-        {
-            let mut indexes_guard = vector_indexes.write().await;
-            indexes_guard.insert(
-                config.index_columns[0].clone(),
-                Arc::new(RwLock::new(vector_index)),
-            );
+        let index_dir = collection_dir.join(config.index_dir.as_str());
+        if index_dir.exists() && !config.index_columns.is_empty() {
+            {
+                let mut indexes_guard = vector_indexes.write().await;
+                for index_column in config.index_columns.clone() {
+                    let index_path = index_dir.join(index_column.as_str());
+                    let vector_index = VectorIndex::from(index_path.to_path_buf())?;
+
+                    indexes_guard.insert(index_column.clone(), Arc::new(RwLock::new(vector_index)));
+                }
+            }
         }
 
         Ok(Collection {
@@ -274,7 +276,7 @@ impl Collection {
                 let index_path = home_dir()
                     .join("collections")
                     .join(self.config.name.as_str())
-                    .join("index")
+                    .join(self.config.index_dir.as_str())
                     .join(column_name);
                 let options = IndexOptions {
                     dimensions: vector_dim as usize,
