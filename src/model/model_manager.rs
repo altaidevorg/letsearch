@@ -1,7 +1,9 @@
 use super::model_utils::{Backend, Embeddings, ModelOutputDType, ONNXModel};
+use crate::hf_ops::download_model;
 use crate::model::backends::onnx::bert_onnx::BertONNX;
 use anyhow::Error;
 use half::f16;
+use log::info;
 use ndarray::Array2;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,16 +22,28 @@ impl ModelManager {
         }
     }
 
-    pub async fn load_model(&self, model_path: String, model_type: Backend) -> anyhow::Result<u32> {
+    pub async fn load_model(
+        &self,
+        model_path: String,
+        model_variant: String,
+        model_type: Backend,
+        token: Option<String>,
+    ) -> anyhow::Result<u32> {
         let model: Arc<RwLock<dyn ONNXModel>> = match model_type {
             Backend::ONNX => Arc::new(RwLock::new(BertONNX::new())),
             // _ => unreachable!("not implemented"),
         };
 
+        let (model_dir, model_file) = if model_path.starts_with("hf://") {
+            download_model(model_path.clone(), model_variant.clone(), token)?
+        } else {
+            (model_path.clone(), model_variant.clone())
+        };
+
         {
             let mut model_guard = model.write().await;
             model_guard
-                .load_model(&model_path)
+                .load_model(model_dir.as_str(), model_file.as_str())
                 .await
                 .map_err(|e| Error::msg(e.to_string()))?;
         }
@@ -40,6 +54,7 @@ impl ModelManager {
 
         let mut models = self.models.write().await;
         models.insert(model_id, model);
+        info!("Model loaded from {}", model_path.as_str());
 
         Ok(model_id)
     }

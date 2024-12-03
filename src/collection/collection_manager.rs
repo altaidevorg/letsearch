@@ -10,15 +10,17 @@ use super::collection_utils::{CollectionConfig, SearchResult};
 pub struct CollectionManager {
     collections: RwLock<HashMap<String, Arc<RwLock<Collection>>>>,
     model_manager: Arc<RwLock<ModelManager>>,
-    model_lookup: RwLock<HashMap<String, u32>>,
+    model_lookup: RwLock<HashMap<(String, String), u32>>,
+    token: Option<String>,
 }
 
 impl CollectionManager {
-    pub fn new() -> Self {
+    pub fn new(token: Option<String>) -> Self {
         CollectionManager {
             collections: RwLock::new(HashMap::new()),
             model_manager: Arc::new(RwLock::new(ModelManager::new())),
             model_lookup: RwLock::new(HashMap::new()),
+            token: token,
         }
     }
 
@@ -30,12 +32,18 @@ impl CollectionManager {
             let manager_guard = self.model_manager.write().await;
             for requested_model in requested_models {
                 let mut lookup_guard = self.model_lookup.write().await;
-                if !lookup_guard.contains_key(requested_model.as_str()) {
+                if !lookup_guard.contains_key(&requested_model) {
+                    let (model_path, model_variant) = requested_model.clone();
                     let model_id = manager_guard
-                        .load_model(requested_model.clone(), Backend::ONNX)
+                        .load_model(
+                            model_path.clone(),
+                            model_variant.clone(),
+                            Backend::ONNX,
+                            self.token.clone(),
+                        )
                         .await
                         .unwrap();
-                    lookup_guard.insert(requested_model.clone(), model_id);
+                    lookup_guard.insert(requested_model, model_id);
                 }
             }
         }
@@ -59,12 +67,18 @@ impl CollectionManager {
             let manager_guard = self.model_manager.write().await;
             for requested_model in requested_models {
                 let mut lookup_guard = self.model_lookup.write().await;
-                if !lookup_guard.contains_key(requested_model.as_str()) {
+                if !lookup_guard.contains_key(&requested_model) {
+                    let (model_path, model_variant) = requested_model.clone();
                     let model_id = manager_guard
-                        .load_model(requested_model.clone(), Backend::ONNX)
+                        .load_model(
+                            model_path.clone(),
+                            model_variant.clone(),
+                            Backend::ONNX,
+                            self.token.clone(),
+                        )
                         .await
                         .unwrap();
-                    lookup_guard.insert(requested_model.clone(), model_id);
+                    lookup_guard.insert(requested_model, model_id);
                 }
             }
         }
@@ -175,14 +189,16 @@ impl CollectionManager {
         };
 
         // Fetch model ID
-        let model_name = collection.read().await.config().model_name;
-        let model_id = {
-            let lookup_guard = self.model_lookup.read().await;
-            lookup_guard
-                .get(&model_name)
-                .copied()
-                .ok_or_else(|| anyhow::anyhow!("Model '{}' is not loaded", model_name))?
-        };
+        let config = collection.read().await.config();
+        let model = (config.model_name, config.model_variant);
+
+        let model_id = self
+            .model_lookup
+            .read()
+            .await
+            .get(&model)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("Model '{:?}' is not loaded", model))?;
 
         // Perform embedding
         let mut collection_guard = collection.write().await;
@@ -212,12 +228,14 @@ impl CollectionManager {
             .ok_or_else(|| {
                 return anyhow::anyhow!("Collection '{}' does not exist", collection_name);
             })?;
-        let model_name = collection.read().await.config().model_name;
+        let config = collection.read().await.config();
+        let model = (config.model_name, config.model_variant);
+
         let model_id = self
             .model_lookup
             .read()
             .await
-            .get(model_name.as_str())
+            .get(&model)
             .copied()
             .ok_or_else(|| {
                 return anyhow::anyhow!(

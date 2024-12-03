@@ -156,8 +156,13 @@ async fn search(
     response
 }
 
-pub async fn run_server(host: String, port: i32, collection_name: String) -> std::io::Result<()> {
-    let collection_manager = CollectionManager::new();
+pub async fn run_server(
+    host: String,
+    port: i32,
+    collection_name: String,
+    token: Option<String>,
+) -> std::io::Result<()> {
+    let collection_manager = CollectionManager::new(token);
     let _ = collection_manager
         .load_collection(collection_name)
         .await

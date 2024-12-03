@@ -17,6 +17,8 @@ pub struct CollectionConfig {
     pub index_columns: Vec<String>,
     #[serde(default = "default_model_name")]
     pub model_name: String,
+    #[serde(default = "default_model_variant")]
+    pub model_variant: String,
     #[serde(default = "default_db_path")]
     pub db_path: String,
     #[serde(default = "default_index_dir")]
@@ -34,7 +36,11 @@ fn default_index_columns() -> Vec<String> {
 }
 
 fn default_model_name() -> String {
-    String::from("minilm")
+    String::from("mys/minilm")
+}
+
+fn default_model_variant() -> String {
+    String::from("f32")
 }
 
 fn default_db_path() -> String {
@@ -55,6 +61,7 @@ impl CollectionConfig {
             name: default_collection_name(),
             index_columns: default_index_columns(),
             model_name: default_model_name(),
+            model_variant: default_model_variant(),
             db_path: default_db_path(),
             index_dir: default_index_dir(),
             serialization_version: default_serialization_version(),
