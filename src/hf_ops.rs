@@ -164,7 +164,6 @@ pub async fn download_model(
     variant: String,
     token: Option<String>,
 ) -> anyhow::Result<(String, String)> {
-    // Build the Hugging Face API instance
     let cache_dir = home_dir().join("models");
     let repo_id = model_path.replace("hf://", "").to_string();
     let (username, repo_name) = repo_id.split_once("/").unwrap();
