@@ -35,7 +35,7 @@ impl ModelManager {
         };
 
         let (model_dir, model_file) = if model_path.starts_with("hf://") {
-            download_model(model_path.clone(), model_variant.clone(), token)?
+            download_model(model_path.clone(), model_variant.clone(), token).await?
         } else {
             (model_path.clone(), model_variant.clone())
         };

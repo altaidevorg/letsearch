@@ -40,7 +40,7 @@ pub enum Commands {
 
         /// Model to create embeddings.
         /// You can also give a hf:// path and it will be automatically  downloaded.
-        #[arg(short, long, required = true)]
+        #[arg(short, long, default_value = "hf://mys/minilm")]
         model: String,
 
         /// model variant. f32, f16 and i8 are supported for now.
@@ -120,7 +120,18 @@ async fn main() -> anyhow::Result<()> {
             config.index_columns = index_columns.to_vec();
             config.model_name = model.to_string();
             config.model_variant = variant.to_string();
-            let collection_manager = CollectionManager::new(hf_token.to_owned());
+
+            let token = if let Some(token) = hf_token {
+                Some(token.to_string())
+            } else {
+                if let Ok(token) = std::env::var("HF_TOKEN") {
+                    Some(token)
+                } else {
+                    None
+                }
+            };
+
+            let collection_manager = CollectionManager::new(token);
             collection_manager
                 .create_collection(config, overwrite.to_owned())
                 .await?;
@@ -151,11 +162,21 @@ async fn main() -> anyhow::Result<()> {
             port,
             hf_token,
         } => {
+            let token = if let Some(token) = hf_token {
+                Some(token.to_string())
+            } else {
+                if let Ok(token) = std::env::var("HF_TOKEN") {
+                    Some(token)
+                } else {
+                    None
+                }
+            };
+
             run_server(
                 host.to_string(),
                 port.to_owned(),
                 collection_name.to_string(),
-                hf_token.to_owned(),
+                token,
             )
             .await?;
         }
