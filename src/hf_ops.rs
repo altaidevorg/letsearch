@@ -166,7 +166,9 @@ pub async fn download_model(
 ) -> anyhow::Result<(String, String)> {
     let cache_dir = home_dir().join("models");
     let repo_id = model_path.replace("hf://", "").to_string();
-    let (username, repo_name) = repo_id.split_once("/").unwrap();
+    let (username, repo_name) = repo_id.split_once("/").ok_or_else(|| {
+        anyhow::anyhow!("This is probabably not a proper HuggingFace path. Check it out")
+    })?;
     let destination_dir = cache_dir.join(username).join(repo_name);
 
     let config_path = download_file(
