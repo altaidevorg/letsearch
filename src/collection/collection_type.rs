@@ -1,7 +1,7 @@
 use crate::collection::collection_utils::{home_dir, CollectionConfig};
 use crate::collection::vector_index::VectorIndex;
 use crate::model::model_manager::ModelManager;
-use crate::model::model_utils::Embeddings;
+use crate::model::model_utils::{Embeddings, ModelOutputDType};
 use anyhow::Error;
 use duckdb::arrow::array::{PrimitiveArray, StringArray};
 use duckdb::arrow::datatypes::UInt64Type;
@@ -22,6 +22,7 @@ use super::collection_utils::SearchResult;
 
 pub struct Collection {
     config: CollectionConfig,
+    // TODO: is it really necessary to acquire a lock on this? duckdb seems to be thread-safe itself.
     conn: Arc<RwLock<Connection>>,
     vector_index: RwLock<HashMap<String, Arc<RwLock<VectorIndex>>>>,
 }
@@ -272,6 +273,17 @@ impl Collection {
                     .output_dim(model_id)
                     .await
                     .unwrap();
+                let output_dtype = model_manager
+                    .read()
+                    .await
+                    .output_dtype(model_id)
+                    .await
+                    .unwrap();
+                let scalar_kind = match output_dtype {
+                    ModelOutputDType::F32 => ScalarKind::F32,
+                    ModelOutputDType::F16 => ScalarKind::F16,
+                    ModelOutputDType::Int8 => ScalarKind::I8,
+                };
 
                 let index_path = home_dir()
                     .join("collections")
@@ -281,7 +293,7 @@ impl Collection {
                 let options = IndexOptions {
                     dimensions: vector_dim as usize,
                     metric: MetricKind::Cos,
-                    quantization: ScalarKind::F32,
+                    quantization: scalar_kind,
                     connectivity: 0,
                     expansion_add: 0,
                     expansion_search: 0,

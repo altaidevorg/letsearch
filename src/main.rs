@@ -5,6 +5,7 @@ use chrono;
 use clap::{Parser, Subcommand};
 use collection::collection_manager::CollectionManager;
 use env_logger::fmt::Formatter;
+use hf_ops::list_models;
 use log::{info, Record};
 use std::io::Write;
 
@@ -14,7 +15,7 @@ use std::io::Write;
     name = "letsearch",
     version = "0.1.10",
     author = "yusufsarigoz@gmail.com",
-    about = "Index and search your documents, and serve it if you wish",
+    about = "Single binary to embed, index, serve and search your documents",
     subcommand_required = true,
     arg_required_else_help = true
 )]
@@ -84,6 +85,13 @@ pub enum Commands {
         #[arg(long)]
         hf_token: Option<String>,
     },
+
+    /// list models compatible with letsearch
+    ListModels {
+        /// HuggingFace Token. Only required to access private models
+        #[arg(long)]
+        hf_token: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -145,6 +153,8 @@ async fn main() -> anyhow::Result<()> {
                 collection_manager
                     .import_parquet(&collection_name, files)
                     .await?;
+            } else {
+                return Err(anyhow::anyhow!("This file is currently not supported"));
             }
 
             if !index_columns.is_empty() {
@@ -179,6 +189,19 @@ async fn main() -> anyhow::Result<()> {
                 token,
             )
             .await?;
+        }
+
+        Commands::ListModels { hf_token } => {
+            let token = if let Some(token) = hf_token {
+                Some(token.to_string())
+            } else {
+                if let Ok(token) = std::env::var("HF_TOKEN") {
+                    Some(token)
+                } else {
+                    None
+                }
+            };
+            list_models(token).await?;
         }
     }
 

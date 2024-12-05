@@ -1,15 +1,15 @@
 use crate::collection::collection_utils::home_dir;
 use anyhow;
 use futures::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
 use reqwest;
+use reqwest::header::CONTENT_LENGTH;
 use reqwest::header::{HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::PathBuf;
-
-use indicatif::{ProgressBar, ProgressStyle};
-use reqwest::header::CONTENT_LENGTH;
+use std::time::Duration;
 
 #[derive(Deserialize, Debug)]
 #[allow(non_snake_case)]
@@ -77,19 +77,28 @@ pub async fn get_model_info(repo_id: &str, files_metadata: bool) -> anyhow::Resu
     Ok(model_info)
 }
 
-#[allow(dead_code)]
-pub async fn get_models(filter: &str) -> anyhow::Result<Vec<Model>> {
+async fn get_models(filter: &str, token: Option<String>) -> anyhow::Result<Vec<Model>> {
     let url = format!("https://huggingface.co/api/models?filter={}", filter);
     let client = reqwest::Client::builder().build()?;
-    let response = client.get(&url).send().await?;
+    let response = match token.as_ref() {
+        Some(token) => client.get(&url).header(
+            AUTHORIZATION,
+            HeaderValue::from_str(format!("BEARER {token}").as_str()).unwrap(),
+        ),
+        None => client.get(&url),
+    }
+    .send()
+    .await?;
+
     if !response.status().is_success() {
         return Err(anyhow::anyhow!("Failed to list models: {}", response.status()).into());
     }
+
     let models: Vec<Model> = response.json().await?;
     Ok(models)
 }
 
-pub async fn download_file(
+async fn download_file(
     repo_id: &str,
     file_name: &str,
     destination_dir: PathBuf,
@@ -113,7 +122,7 @@ pub async fn download_file(
     let response = match token.as_ref() {
         Some(token) => client.get(&url).header(
             AUTHORIZATION,
-            HeaderValue::from_str(format!("BEARER {token}").to_string().as_str()).unwrap(),
+            HeaderValue::from_str(format!("BEARER {token}").as_str()).unwrap(),
         ),
         None => client.get(&url),
     }
@@ -200,17 +209,17 @@ pub async fn download_model(
         .ok_or_else(|| anyhow::anyhow!("Variant not found in config"))?;
 
     // Download the ONNX model for the specified variant
-    let model_file = match variant_info["path"].as_str() {
-        Some(model_path) => PathBuf::from(
+    let local_model_path = match variant_info["path"].as_str() {
+        Some(model_file) => PathBuf::from(
             download_file(
                 &repo_id.as_str(),
-                model_path,
+                model_file,
                 destination_dir.clone(),
                 token.clone(),
             )
             .await?,
         ),
-        _ => unreachable!("unreachable"),
+        None => unreachable!("unreachable"), // we already varified it's a letsearch model, so there shouldn't be a variant without a path key
     };
 
     if let Some(required_files) = config["required_files"].as_array() {
@@ -225,8 +234,13 @@ pub async fn download_model(
         }
     }
 
-    let model_dir = model_file.parent().unwrap().to_str().unwrap().to_string();
-    let model_file = model_file
+    let model_dir = local_model_path
+        .parent()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let model_file = local_model_path
         .file_name()
         .unwrap()
         .to_str()
@@ -234,4 +248,38 @@ pub async fn download_model(
         .to_string();
 
     Ok((model_dir, model_file))
+}
+
+pub async fn list_models(token: Option<String>) -> anyhow::Result<()> {
+    // Create an indefinite spinner progress bar
+    let progress_bar = ProgressBar::new_spinner();
+    progress_bar.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg}")
+            .expect("Failed to set template")
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
+    progress_bar.enable_steady_tick(Duration::from_millis(100));
+    progress_bar.set_message("Listing models...");
+
+    let mut models = get_models("letsearch", token.clone()).await?;
+    if models.is_empty() {
+        progress_bar.finish_and_clear();
+        println!("No letsearch-compatible models found on HuggingFace Hub :(");
+        println!("Maybe trying to convert your own?");
+        return Ok(());
+    } else {
+        let count = models.len();
+        progress_bar.finish_with_message(format!("{} model(s) found!", count));
+
+        println!("===============");
+        models.sort_by(|a, b| b.downloads.cmp(&a.downloads));
+        for model in models {
+            println!("     hf://{}", model.modelId);
+        }
+    }
+    println!("");
+    println!("If you cannot see a private model of yours, try using `--hf-token` argument or setting `HF_TOKEN` as an environment variable.");
+
+    Ok(())
 }

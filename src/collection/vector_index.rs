@@ -1,7 +1,9 @@
 use anyhow;
 use log::{debug, info};
+use rayon::prelude::*;
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::{fs, u64, usize};
 use usearch::{new_index, Index, IndexOptions, VectorType};
 
@@ -9,6 +11,10 @@ use usearch::{new_index, Index, IndexOptions, VectorType};
 pub struct SimilarityResult {
     pub key: u64,
     pub score: f32,
+}
+
+struct PtrBox<T: VectorType> {
+    ptr: *const T,
 }
 
 pub struct VectorIndex {
@@ -65,20 +71,30 @@ impl VectorIndex {
         let index = self.index.as_ref().unwrap();
         let index_path = self.path.join("index.bin");
         index.save(index_path.to_str().unwrap()).unwrap();
+
         Ok(())
     }
 
     pub async fn add<T: VectorType>(
         &self,
         keys: &Vec<u64>,
-        vectors: *const T,
+        vectors_ptr: *const T,
         vector_dim: usize,
     ) -> anyhow::Result<()> {
         let index = self.index.as_ref().unwrap();
+        let current_capacity = index.capacity();
+        let size = index.size();
+        let count = keys.len();
+        let required_capacity = size + count;
+        if required_capacity > current_capacity {
+            let extra_capacity = (required_capacity as f64 * 1.1) as usize;
+            index.reserve(extra_capacity)?;
+        }
 
-        // TODO: parallelize with tokio_stream later on
-        keys.iter().enumerate().for_each(|(i, _key)| {
-            let vector_offset = unsafe { vectors.add(i * vector_dim) };
+        let shared_vectors = Arc::new(PtrBox { ptr: vectors_ptr });
+        keys.par_iter().enumerate().for_each(|(i, _key)| {
+            let vectors = shared_vectors.clone();
+            let vector_offset = unsafe { vectors.ptr.add(i * vector_dim) };
             let vector: &[T] = unsafe { std::slice::from_raw_parts(vector_offset, vector_dim) };
             index.add(keys[i], vector).unwrap();
         });
@@ -94,6 +110,7 @@ impl VectorIndex {
     ) -> anyhow::Result<Vec<SimilarityResult>> {
         let query_vector: &[T] = unsafe { std::slice::from_raw_parts(vector, vector_dim) };
         let index = self.index.as_ref().unwrap();
+
         let matches = index.search(query_vector, count)?;
         let results: Vec<SimilarityResult> = matches
             .keys
@@ -108,3 +125,6 @@ impl VectorIndex {
         Ok(results)
     }
 }
+
+unsafe impl<T: VectorType> Send for PtrBox<T> {}
+unsafe impl<T: VectorType> Sync for PtrBox<T> {}

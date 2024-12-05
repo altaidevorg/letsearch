@@ -1,21 +1,39 @@
+# letsearch
+![logo](./assets/logo.jpg)
+
+A single binary to embed, index, search and serve your documents
+
+## What is this?
+letsearch is a single executable binary to easily embed, index and search your documents without writing a single line of code. With its built-in support for ONNX inference (llama.cpp and GGUF support coming soon!), you can import, embed and index your documents from JSONL and Parquet files --it can even fetch them from HuggingFace Hub for you (PDF / Doc / Dox support coming soon with automatic chunking feature!).
+
+[MCP](https://modelcontextprotocol.io/introduction) support is also on the way!
+
+## Usage
+1. Download the latest prebuilt binary from [releases](https://github.com/monatis/letsearch/releases).
+2. And simply run on terminal:
+
+```sh
+./letsearch
+```
+
+Wuhu! Now you already know how to use letsearch! It's that simple.
+
+
+## Models
+- To see the models currently available on HuggingFace Hub, run:
+
+```sh
+./letsearch list-models
+```
+To convert your own models to a format that you can use with letsearch, see [this script](./scripts/export_to_onnx.py).
+
+## Search
+Se [this](./scripts/test.py) for a dead simple request example. A full Python client is on the way.
+
 ## roadmap
-1. Refactor model manager to use string keys in hash map.
-2. Maybe export a `ModelInfo` struct with `get_models()`?
-3. Chunking support and multiple vectors per key.
-4. maybe get /schema endpoint
-5. incremental index building, maybe postponed later.
-6. llama.cpp backend
-7. automatically get letsencrypt TLS certificate and API key
-8. finetune embedding models
-
-## TODO for search
-1. Allow multiple column index
-
-## Test command
-```sh
-cargo run -- index -m ../altaidemo/model/minilm -c test1 hf://datasets/neural-bridge/rag-dataset-12000/**/*.parquet --overwrite -b 128 -i context
-```
-
-```sh
-cargo run -- index -c test2 -m ../altaidemo/model/minilm -b 128 hf://datasets/rag-datasets/rag-mini-wikipedia/data/passages.parquet/*.parquet -i passage --overwrite
-```
+- [ ] Incremental index building (appending on terminal and `/add` endpoint on API)
+- [ ] Chunking support and multiple vectors per key.
+- [ ] MCP support.
+- [ ] llama.cpp backend
+- [ ] automatically get letsencrypt TLS certificate and API key
+- [ ] finetune embedding models
