@@ -153,6 +153,8 @@ async fn main() -> anyhow::Result<()> {
                 collection_manager
                     .import_parquet(&collection_name, files)
                     .await?;
+            } else {
+                return Err(anyhow::anyhow!("This file is currently not supported"));
             }
 
             if !index_columns.is_empty() {
