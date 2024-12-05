@@ -15,7 +15,7 @@ ap = argparse.ArgumentParser(
 )
 ap.add_argument("-m", "--model", required=True, help="Model to export")
 ap.add_argument("-o", "--output", required=True, help="Where to save the ONNX model")
-app.add_argument(
+ap.add_argument(
     "-d",
     "--description",
     required=False,
