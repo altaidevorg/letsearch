@@ -5,6 +5,7 @@ use chrono;
 use clap::{Parser, Subcommand};
 use collection::collection_manager::CollectionManager;
 use env_logger::fmt::Formatter;
+use hf_ops::list_models;
 use log::{info, Record};
 use std::io::Write;
 
@@ -14,7 +15,7 @@ use std::io::Write;
     name = "letsearch",
     version = "0.1.10",
     author = "yusufsarigoz@gmail.com",
-    about = "Index and search your documents, and serve it if you wish",
+    about = "Single binary to embed, index, serve and search your documents",
     subcommand_required = true,
     arg_required_else_help = true
 )]
@@ -81,6 +82,13 @@ pub enum Commands {
         port: i32,
 
         /// HuggingFace token. Only needed when you want to access private repos
+        #[arg(long)]
+        hf_token: Option<String>,
+    },
+
+    /// list models compatible with letsearch
+    ListModels {
+        /// HuggingFace Token. Only required to access private models
         #[arg(long)]
         hf_token: Option<String>,
     },
@@ -179,6 +187,19 @@ async fn main() -> anyhow::Result<()> {
                 token,
             )
             .await?;
+        }
+
+        Commands::ListModels { hf_token } => {
+            let token = if let Some(token) = hf_token {
+                Some(token.to_string())
+            } else {
+                if let Ok(token) = std::env::var("HF_TOKEN") {
+                    Some(token)
+                } else {
+                    None
+                }
+            };
+            list_models(token).await?;
         }
     }
 

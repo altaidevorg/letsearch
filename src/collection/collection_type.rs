@@ -22,6 +22,7 @@ use super::collection_utils::SearchResult;
 
 pub struct Collection {
     config: CollectionConfig,
+    // TODO: is it really necessary to acquire a lock on this? duckdb seems to be thread-safe itself.
     conn: Arc<RwLock<Connection>>,
     vector_index: RwLock<HashMap<String, Arc<RwLock<VectorIndex>>>>,
 }
