@@ -44,7 +44,9 @@ onnx_infer_path = f"{output_path}/model-infer.onnx"
 onnx_int8_path = f"{output_path}/model-i8.onnx"
 
 
-dummy_model_input = tokenizer("Using BERT with ONNX Runtime!", return_tensors="pt")
+dummy_model_input = tokenizer("Using BERT with ONNX Runtime!", return_tensors="pt").to(
+    device
+)
 inputs = tuple(dummy_model_input.values())
 input_names = tuple(dummy_model_input.keys())
 dynamic_axes = {

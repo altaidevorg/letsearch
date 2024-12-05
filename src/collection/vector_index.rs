@@ -86,7 +86,7 @@ impl VectorIndex {
         let size = index.size();
         let count = keys.len();
         let required_capacity = size + count;
-        if required_capacity < current_capacity {
+        if required_capacity > current_capacity {
             let extra_capacity = (required_capacity as f64 * 1.1) as usize;
             index.reserve(extra_capacity)?;
         }
