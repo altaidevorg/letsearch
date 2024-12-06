@@ -283,3 +283,50 @@ pub async fn list_models(token: Option<String>) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::hf_ops::{download_model, get_model_info, list_models};
+    use std::env::temp_dir;
+    use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn test_download_file() {
+        let tmp_dir = temp_dir().join("letsearch_models");
+        let repo_id = "mys/minilm";
+        let file_name = "metadata.json";
+        let downloaded_file = super::download_file(repo_id, file_name, tmp_dir, None)
+            .await
+            .unwrap();
+        assert!(PathBuf::from(downloaded_file).exists());
+    }
+
+    #[tokio::test]
+    async fn test_download_model() {
+        let model_path = String::from("hf://mys/minilm");
+        let variant = String::from("i8");
+        let (model_dir, model_file) = download_model(model_path, variant, None).await.unwrap();
+
+        let model_path = PathBuf::from(&model_dir).join(&model_file);
+        assert!(model_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_get_model_info() {
+        let repo_id = "mys/minilm";
+        let model_info = get_model_info(repo_id, false).await.unwrap();
+        assert!(model_info.modelId.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_get_models() {
+        let models = super::get_models("letsearch", None).await.unwrap();
+        assert!(!models.is_empty()); // Assuming there's at least one "letsearch" model
+    }
+
+    #[tokio::test]
+    async fn test_list_models() {
+        // This function primarily prints to stdout, so we'll just check if it completes without error.
+        list_models(None).await.unwrap();
+    }
+}
