@@ -9,7 +9,7 @@ pub fn home_dir() -> PathBuf {
         .into()
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct CollectionConfig {
     #[serde(default = "default_collection_name")]
     pub name: String,

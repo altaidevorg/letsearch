@@ -283,11 +283,10 @@ pub async fn list_models(token: Option<String>) -> anyhow::Result<()> {
 
     Ok(())
 }
+
 #[cfg(test)]
 mod tests {
-    use crate::hf_ops::{download_model, get_model_info, list_models, ModelInfo, RepoFile};
-    use futures::StreamExt;
-    use reqwest::header::CONTENT_LENGTH;
+    use crate::hf_ops::{download_model, get_model_info, list_models};
     use std::env::temp_dir;
     use std::fs;
     use std::path::PathBuf;
@@ -314,7 +313,7 @@ mod tests {
         assert!(model_path.exists());
 
         // Clean up
-        fs::remove_dir_all(PathBuf::from(&model_dir)).unwrap();
+        //fs::remove_dir_all(PathBuf::from(&model_dir)).unwrap();
     }
 
     #[tokio::test]
@@ -328,5 +327,11 @@ mod tests {
     async fn test_get_models() {
         let models = super::get_models("letsearch", None).await.unwrap();
         assert!(!models.is_empty()); // Assuming there's at least one "letsearch" model
+    }
+
+    #[tokio::test]
+    async fn test_list_models() {
+        // This function primarily prints to stdout, so we'll just check if it completes without error.
+        list_models(None).await.unwrap();
     }
 }

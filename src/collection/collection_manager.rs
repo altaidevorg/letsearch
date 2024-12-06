@@ -258,3 +258,57 @@ impl CollectionManager {
         Ok(results)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::CollectionManager;
+    use crate::collection::collection_utils::CollectionConfig;
+
+    #[tokio::test]
+    async fn test_collection_manager() {
+        let manager = CollectionManager::new(None);
+        let mut config = CollectionConfig::default();
+        config.name = String::from("test_collection");
+
+        config.model_name = "hf://mys/minilm".to_string();
+        config.model_variant = "i8".to_string();
+
+        manager
+            .create_collection(config.clone(), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.get_collections().await,
+            vec!["test_collection".to_string()]
+        );
+
+        assert_eq!(manager.get_collection_configs().await[0], config);
+        manager
+            .import_jsonl(
+                "test_collection",
+                "hf://datasets/llmware/rag_instruct_benchmark_tester/*.jsonl",
+            )
+            .await
+            .unwrap();
+
+        let column_name = "context";
+        let batch_size = 32;
+        manager
+            .embed_column("test_collection", column_name, batch_size)
+            .await
+            .unwrap();
+
+        // Search
+        let query = "What is the total amount of the invoice?".to_string();
+        let results = manager
+            .search(
+                "test_collection".to_string(),
+                column_name.to_string(),
+                query,
+                10,
+            )
+            .await
+            .unwrap();
+        assert!(!results.is_empty()); // This might not always be true, depending on the data and query
+    }
+}
