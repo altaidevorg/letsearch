@@ -288,7 +288,6 @@ pub async fn list_models(token: Option<String>) -> anyhow::Result<()> {
 mod tests {
     use crate::hf_ops::{download_model, get_model_info, list_models};
     use std::env::temp_dir;
-    
     use std::path::PathBuf;
 
     #[tokio::test]
@@ -306,14 +305,10 @@ mod tests {
     async fn test_download_model() {
         let model_path = String::from("hf://mys/minilm");
         let variant = String::from("i8");
-
         let (model_dir, model_file) = download_model(model_path, variant, None).await.unwrap();
 
         let model_path = PathBuf::from(&model_dir).join(&model_file);
         assert!(model_path.exists());
-
-        // Clean up
-        //fs::remove_dir_all(PathBuf::from(&model_dir)).unwrap();
     }
 
     #[tokio::test]

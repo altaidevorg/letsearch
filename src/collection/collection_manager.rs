@@ -261,8 +261,10 @@ impl CollectionManager {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::CollectionManager;
-    use crate::collection::collection_utils::CollectionConfig;
+    use crate::collection::collection_utils::{home_dir, CollectionConfig};
 
     #[tokio::test]
     async fn test_collection_manager() {
@@ -310,5 +312,7 @@ mod tests {
             .await
             .unwrap();
         assert!(!results.is_empty()); // This might not always be true, depending on the data and query
+
+        fs::remove_dir_all(home_dir().join("models").join("mys").join("minilm")).unwrap();
     }
 }
