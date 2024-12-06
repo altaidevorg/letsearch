@@ -30,7 +30,7 @@ With its built-in support for ONNX inference (llama.cpp and GGUF support coming 
 
 Wuhu! Now you already know how to use letsearch! 🙋 It's that simple.
 
-⚠️ **Note**: letsearch is at a early stage of development, so rapid changes in the API should be accepted.
+⚠️ **Note**: letsearch is at a early stage of development, so rapid changes in the API should be expected.
 
 ## 🧮 Models
 - To see the models currently available on HuggingFace Hub, run:
