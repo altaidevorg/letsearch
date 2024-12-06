@@ -109,3 +109,20 @@ metadata = {
 
 with open(f"{output_path}/metadata.json", "w") as f:
     f.write(json.dumps(metadata))
+
+readme = """---
+license: mit
+tags:
+- letsearch
+- rag
+- embedding
+- semantic-search
+- onnx
+---
+## Overview
+This is a letsearch-compatible text embedding model.
+## Usage
+See [letsearch](https://github.com/monatis/letsearch)."""
+
+with open(f"{output_path}/README.md", "w") as f:
+    f.write(readme)
