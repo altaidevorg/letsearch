@@ -288,7 +288,7 @@ pub async fn list_models(token: Option<String>) -> anyhow::Result<()> {
 mod tests {
     use crate::hf_ops::{download_model, get_model_info, list_models};
     use std::env::temp_dir;
-    use std::fs;
+    
     use std::path::PathBuf;
 
     #[tokio::test]
