@@ -53,8 +53,8 @@ The most popular features will prioritized.
 If you have something in mind that you think will be a great addition to letsearch, please let me know by raising an [issue](https://github.com/monatis/letsearch/issues/new).
 
 - [ ] [Incremental index building: appending on terminal and `/add` endpoint on API](https://github.com/monatis/letsearch/issues/9)
-- [ ] [Import content from PDFs and automatic chunking support](https://github.com/monatis/letsearch/10)
-- [ ] [MCP support](https://github.com/monatis/letsearch/11)
+- [ ] [Import content from PDFs and automatic chunking support](https://github.com/monatis/letsearch/issues/10)
+- [ ] [MCP support](https://github.com/monatis/letsearch/issues/11)
 - [ ] [llama.cpp backend](https://github.com/monatis/letsearch/issues/12)
 - [ ] [Multimodal support](https://github.com/monatis/letsearch/issues/13)
 - [ ] [Support API key](https://github.com/monatis/letsearch/issues/14)
