@@ -68,12 +68,26 @@ If you have something in mind that you think will be a great addition to letsear
 
 Please also check [other issues](https://github.com/monatis/letsearch/issues).
 
-## Tests
+## 🌡️ Tests and Benchmarks
+
+```sh
+cargo bench
+```
+
+To benchmark the full pipeline, you can also run:
+
+**Note**: This can take a lot of time.
+
+```sh
+cargo bench --feature heavyweight
+```
+
+To run the tests:
 
 ```sh
 cargo test
 ```
 
-## License
+## 📖 License
 
 letsearch is distributed under the terms of [the Apache License 2.0](https://github.com/monatis/letsearch).
