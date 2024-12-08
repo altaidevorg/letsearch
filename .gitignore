@@ -2,4 +2,5 @@
 *.db
 *.dll
 *.bin
+*.jsonl
 .letsearch/
