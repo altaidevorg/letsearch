@@ -13,7 +13,7 @@ use std::io::Write;
 #[derive(Parser, Debug)]
 #[command(
     name = "letsearch",
-    version = "0.1.11",
+    version = "0.1.12",
     author = "yusufsarigoz@gmail.com",
     about = "Single binary to embed, index, serve and search your documents",
     subcommand_required = true,
