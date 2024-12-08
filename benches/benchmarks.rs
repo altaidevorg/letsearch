@@ -97,6 +97,7 @@ fn benchmark_pipeline(c: &mut Criterion) {
     });
 }
 
+#[cfg(not(feature = "heavyweight"))]
 criterion_group!(benches, benchmark_import_jsonl);
 #[cfg(feature = "heavyweight")]
 criterion_group!(benches, benchmark_pipeline, benchmark_import_jsonl);

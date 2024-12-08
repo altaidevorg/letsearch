@@ -23,9 +23,9 @@ pub enum Embeddings {
 
 #[async_trait]
 pub trait ModelTrait {
-    async fn load_model(&mut self, model_dir: &str, model_file: &str) -> anyhow::Result<()>;
-    #[allow(dead_code)]
-    async fn unload_model(&self) -> anyhow::Result<()>;
+    async fn new(model_dir: &str, model_file: &str) -> anyhow::Result<Self>
+    where
+        Self: Sized;
 }
 
 #[async_trait]
