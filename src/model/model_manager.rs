@@ -1,6 +1,7 @@
 use super::model_utils::{Backend, Embeddings, ModelOutputDType, ONNXModel};
 use crate::hf_ops::download_model;
 use crate::model::backends::onnx::bert_onnx::BertONNX;
+use crate::model::model_utils::ModelTrait;
 use anyhow::Error;
 use half::f16;
 use log::info;
@@ -29,24 +30,20 @@ impl ModelManager {
         model_type: Backend,
         token: Option<String>,
     ) -> anyhow::Result<u32> {
-        let model: Arc<RwLock<dyn ONNXModel>> = match model_type {
-            Backend::ONNX => Arc::new(RwLock::new(BertONNX::new())),
-            // _ => unreachable!("not implemented"),
-        };
-
         let (model_dir, model_file) = if model_path.starts_with("hf://") {
             download_model(model_path.clone(), model_variant.clone(), token).await?
         } else {
             (model_path.clone(), model_variant.clone())
         };
 
-        {
-            let mut model_guard = model.write().await;
-            model_guard
-                .load_model(model_dir.as_str(), model_file.as_str())
-                .await
-                .map_err(|e| Error::msg(e.to_string()))?;
-        }
+        let model: Arc<RwLock<dyn ONNXModel>> = match model_type {
+            Backend::ONNX => Arc::new(RwLock::new(
+                BertONNX::new(model_dir.as_str(), model_file.as_str())
+                    .await
+                    .unwrap(),
+            )),
+            // _ => unreachable!("not implemented"),
+        };
 
         let mut next_id = self.next_id.write().await;
         let model_id = *next_id;

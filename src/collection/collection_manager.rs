@@ -274,6 +274,7 @@ mod tests {
 
         config.model_name = "hf://mys/minilm".to_string();
         config.model_variant = "i8".to_string();
+        config.index_columns = vec![String::from("context")];
 
         manager
             .create_collection(config.clone(), true)

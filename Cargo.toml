@@ -24,6 +24,11 @@ usearch = "2.16.6"
 indicatif = "0.17.9"
 reqwest = { version = "0.12.9", features = ["json", "stream"] }
 futures = "0.3.31"
+criterion = {version = "0.5.1", features = ["async_tokio"]}
+
+[[bench]]
+name = "benchmarks"
+harness = false
 
 [target.'cfg(windows)'.dependencies]
 ort = { version = "2.0.0-rc.8", features = ["load-dynamic", "ndarray", "half"]}
@@ -31,3 +36,7 @@ ort = { version = "2.0.0-rc.8", features = ["load-dynamic", "ndarray", "half"]}
 [profile.release]
 opt-level = 3
 lto = true
+
+[features]
+default = []
+heavyweight = []

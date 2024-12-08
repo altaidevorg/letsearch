@@ -1,11 +1,11 @@
-use crate::collection::collection_utils::CollectionConfig;
-use crate::serve::run_server;
 use anyhow;
 use chrono;
 use clap::{Parser, Subcommand};
-use collection::collection_manager::CollectionManager;
 use env_logger::fmt::Formatter;
-use hf_ops::list_models;
+use letsearch::collection::collection_manager::CollectionManager;
+use letsearch::collection::collection_utils::CollectionConfig;
+use letsearch::hf_ops::list_models;
+use letsearch::serve::run_server;
 use log::{info, Record};
 use std::io::Write;
 
@@ -207,8 +207,3 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-
-mod collection;
-mod hf_ops;
-mod model;
-mod serve;

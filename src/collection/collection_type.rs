@@ -1,3 +1,4 @@
+use super::collection_utils::SearchResult;
 use crate::collection::collection_utils::{home_dir, CollectionConfig};
 use crate::collection::vector_index::VectorIndex;
 use crate::model::model_manager::ModelManager;
@@ -17,8 +18,6 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use usearch::f16 as UsearchF16;
 use usearch::{IndexOptions, MetricKind, ScalarKind};
-
-use super::collection_utils::SearchResult;
 
 pub struct Collection {
     config: CollectionConfig,
@@ -102,17 +101,20 @@ impl Collection {
         // prevent deadlock when add_keys_to_db is trying to acquire a lock
         {
             let conn = self.conn.clone();
-            let conn_guard = conn.write().await;
-            conn_guard.execute_batch(
+            let mut conn_guard = conn.write().await;
+            let tx = conn_guard.transaction()?;
+            tx.execute_batch(
                 format!(
                     "CREATE TABLE {} AS SELECT * FROM read_json_auto('{}');",
                     &self.config.name, jsonl_path
                 )
                 .as_str(),
             )?;
+            self.add_keys_to_db(&tx).await?;
+
+            tx.commit()?;
         }
 
-        self.add_keys_to_db().await?;
         info!(
             "Records imported from {:?} in {:?}",
             jsonl_path,
@@ -127,17 +129,20 @@ impl Collection {
         // prevent deadlock when add_keys_to_db is trying to acquire a lock
         {
             let conn = self.conn.clone();
-            let conn_guard = conn.write().await;
-            conn_guard.execute_batch(
+            let mut conn_guard = conn.write().await;
+            let tx = conn_guard.transaction()?;
+
+            tx.execute_batch(
                 format!(
                     "CREATE TABLE {} AS SELECT * FROM read_parquet('{}', filename = true);",
                     &self.config.name, parquet_path
                 )
                 .as_str(),
             )?;
+            self.add_keys_to_db(&tx).await?;
+            tx.commit()?;
         }
 
-        self.add_keys_to_db().await?;
         info!(
             "Records imported from {:?} in {:?}",
             parquet_path,
@@ -428,9 +433,9 @@ impl Collection {
         Ok(search_results)
     }
 
-    async fn add_keys_to_db(&self) -> anyhow::Result<()> {
-        let conn = self.conn.clone();
-        let conn_guard = conn.read().await;
+    async fn add_keys_to_db(&self, tx: &duckdb::Transaction<'_>) -> anyhow::Result<()> {
+        //let conn = self.conn.clone();
+        //let conn_guard = conn.read().await;
 
         // Check if the '_key' column exists in the table
         let query = format!(
@@ -438,13 +443,13 @@ impl Collection {
             self.config.name
         );
         let exists: bool = {
-            let mut stmt = conn_guard.prepare(&query)?;
+            let mut stmt = tx.prepare(&query)?;
             let count: i64 = stmt.query_row([], |row| row.get(0))?;
             count > 0
         };
 
         if !exists {
-            conn_guard.execute_batch(
+            tx.execute_batch(
                 format!(
                     r"CREATE SEQUENCE keys_seq;
     ALTER TABLE {} ADD COLUMN _key UBIGINT DEFAULT NEXTVAL('keys_seq');

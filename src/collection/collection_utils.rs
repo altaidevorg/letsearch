@@ -36,7 +36,7 @@ fn default_index_columns() -> Vec<String> {
 }
 
 fn default_model_name() -> String {
-    String::from("mys/minilm")
+    String::from("hf://mys/minilm")
 }
 
 fn default_model_variant() -> String {

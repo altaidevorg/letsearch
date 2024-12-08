@@ -1,39 +1,28 @@
 use crate::model::model_utils::{ModelOutputDType, ModelTrait, ONNXModelTrait};
-use anyhow::Error;
+use anyhow;
 use async_trait::async_trait;
 use half::f16;
-use log::{debug, info};
+use log::info;
 use ndarray::{Array2, Ix2};
 use ort::{CPUExecutionProvider, GraphOptimizationLevel, Session};
 use rayon::prelude::*;
+use std::path::Path;
 use std::sync::Arc;
 use std::thread::available_parallelism;
-use std::{path::Path, time::Instant};
 use tokenizers::{PaddingParams, Tokenizer};
+use tokio::task;
 
 pub struct BertONNX {
-    pub model: Option<Session>,
-    pub tokenizer: Option<Tokenizer>,
-    output_dtype: Option<ModelOutputDType>,
-    output_dim: Option<i64>,
-    needs_token_type_ids: Option<bool>,
-}
-
-impl BertONNX {
-    pub fn new() -> Self {
-        Self {
-            tokenizer: None,
-            model: None,
-            output_dtype: None,
-            output_dim: None,
-            needs_token_type_ids: None,
-        }
-    }
+    pub model: Arc<Session>,
+    pub tokenizer: Arc<Tokenizer>,
+    output_dtype: ModelOutputDType,
+    output_dim: i64,
+    needs_token_type_ids: bool,
 }
 
 #[async_trait]
 impl ModelTrait for BertONNX {
-    async fn load_model(&mut self, model_dir: &str, model_file: &str) -> anyhow::Result<()> {
+    async fn new(model_dir: &str, model_file: &str) -> anyhow::Result<Self> {
         let model_source_path = Path::new(model_dir);
         ort::init()
             .with_name("onnx_model")
@@ -71,10 +60,11 @@ impl ModelTrait for BertONNX {
             .unwrap()
             .to_string();
         info!("Model output dtype: {:?}", dtype);
-        self.output_dtype = match dtype.as_str() {
-            "f16" => Some(ModelOutputDType::F16),
-            "f32" => Some(ModelOutputDType::F32),
-            _ => None,
+
+        let output_dtype = match dtype.as_str() {
+            "f16" => ModelOutputDType::F16,
+            "f32" => ModelOutputDType::F32,
+            _ => ModelOutputDType::F32,
         };
 
         // determine model output dimension
@@ -95,18 +85,14 @@ impl ModelTrait for BertONNX {
             .map(|i| i.name.as_str())
             .collect::<Vec<&str>>()
             .contains(&tti_name);
-        self.needs_token_type_ids = Some(needs_token_type_ids);
 
-        self.model = Some(session);
-        self.tokenizer = Some(tokenizer);
-        self.output_dim = Some(dim);
-
-        Ok(())
-    }
-
-    async fn unload_model(&self) -> anyhow::Result<()> {
-        //Unload model
-        Ok(())
+        Ok(Self {
+            model: Arc::new(session),
+            tokenizer: Arc::new(tokenizer),
+            output_dim: dim,
+            output_dtype: output_dtype,
+            needs_token_type_ids: needs_token_type_ids,
+        })
     }
 }
 
@@ -119,48 +105,63 @@ impl ONNXModelTrait for BertONNX {
         let inputs: Vec<String> = texts.par_iter().map(|s| s.to_string()).collect();
 
         // Encode input strings.
-        let model = self.model.as_ref().unwrap();
-        let tokenizer = self.tokenizer.as_ref().unwrap();
+        let model = self.model.clone();
+        let tokenizer = self.tokenizer.clone();
 
-        // tokenize inputs
-        let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
-        let padded_token_length = encodings[0].len();
+        let needs_token_type_ids = self.needs_token_type_ids;
 
-        // Extract token IDs and attention masks
-        let ids: Vec<i64> = encodings
-            .par_iter()
-            .flat_map_iter(|e| e.get_ids().iter().map(|i| *i as i64))
-            .collect();
-        let mask: Vec<i64> = encodings
-            .par_iter()
-            .flat_map_iter(|e| e.get_attention_mask().iter().map(|i| *i as i64))
-            .collect();
-        let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).unwrap();
-        let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask).unwrap();
+        let (a_ids, a_mask, a_t_ids) = task::spawn_blocking(move || {
+            // tokenize inputs
+            let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
+            let padded_token_length = encodings[0].len();
+
+            // Extract token IDs and attention masks
+            let ids: Vec<i64> = encodings
+                .par_iter()
+                .flat_map_iter(|e| e.get_ids().iter().map(|i| *i as i64))
+                .collect();
+            let mask: Vec<i64> = encodings
+                .par_iter()
+                .flat_map_iter(|e| e.get_attention_mask().iter().map(|i| *i as i64))
+                .collect();
+            let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).unwrap();
+            let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask).unwrap();
+
+            let a_t_ids = if needs_token_type_ids {
+                let t_ids: Vec<i64> = encodings
+                    .par_iter()
+                    .flat_map_iter(|e| e.get_type_ids().iter().map(|i| *i as i64))
+                    .collect();
+                Some(Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids).unwrap())
+            } else {
+                None
+            };
+
+            (a_ids, a_mask, a_t_ids)
+        })
+        .await?;
 
         // Run the model.
-        let start = Instant::now();
-        let outputs = if self.needs_token_type_ids.unwrap() {
-            let t_ids = encodings
-                .par_iter()
-                .flat_map_iter(|e| e.get_type_ids().iter().map(|i| *i as i64))
-                .collect();
-            let a_t_ids =
-                Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids).unwrap();
-            model
-                .run(ort::inputs![a_ids, a_t_ids, a_mask].unwrap())
+
+        let embeddings_tensor = task::spawn_blocking(move || {
+            let outputs = if let Some(a_t_ids) = a_t_ids {
+                model
+                    .run(ort::inputs![a_ids, a_t_ids, a_mask].unwrap())
+                    .unwrap()
+            } else {
+                model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap()
+            };
+
+            // Extract embeddings tensor.
+            let embeddings_tensor = outputs[1]
+                .try_extract_tensor::<f16>()
                 .unwrap()
-        } else {
-            model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap()
-        };
+                .into_dimensionality::<Ix2>()
+                .unwrap();
 
-        debug!("actual inference took: {:?}", start.elapsed());
-
-        // Extract embeddings tensor.
-        let embeddings_tensor = outputs[1]
-            .try_extract_tensor::<f16>()?
-            .into_dimensionality::<Ix2>()
-            .unwrap();
+            embeddings_tensor.to_owned()
+        })
+        .await?;
 
         Ok(Arc::new(embeddings_tensor.to_owned()))
     }
@@ -172,63 +173,72 @@ impl ONNXModelTrait for BertONNX {
         let inputs: Vec<String> = texts.par_iter().map(|s| s.to_string()).collect();
 
         // Encode input strings.
-        let model = self.model.as_ref().unwrap();
-        let tokenizer = self.tokenizer.as_ref().unwrap();
+        let model = self.model.clone();
+        let tokenizer = self.tokenizer.clone();
 
-        // tokenize inputs
-        let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
-        let padded_token_length = encodings[0].len();
+        let needs_token_type_ids = self.needs_token_type_ids;
 
-        // Extract token IDs and attention masks
-        let ids: Vec<i64> = encodings
-            .par_iter()
-            .flat_map_iter(|e| e.get_ids().iter().map(|i| *i as i64))
-            .collect();
-        let mask: Vec<i64> = encodings
-            .par_iter()
-            .flat_map_iter(|e| e.get_attention_mask().iter().map(|i| *i as i64))
-            .collect();
-        let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).unwrap();
-        let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask).unwrap();
+        let (a_ids, a_mask, a_t_ids) = task::spawn_blocking(move || {
+            // tokenize inputs
+            let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
+            let padded_token_length = encodings[0].len();
+
+            // Extract token IDs and attention masks
+            let ids: Vec<i64> = encodings
+                .par_iter()
+                .flat_map_iter(|e| e.get_ids().iter().map(|i| *i as i64))
+                .collect();
+            let mask: Vec<i64> = encodings
+                .par_iter()
+                .flat_map_iter(|e| e.get_attention_mask().iter().map(|i| *i as i64))
+                .collect();
+            let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).unwrap();
+            let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask).unwrap();
+
+            let a_t_ids = if needs_token_type_ids {
+                let t_ids: Vec<i64> = encodings
+                    .par_iter()
+                    .flat_map_iter(|e| e.get_type_ids().iter().map(|i| *i as i64))
+                    .collect();
+                Some(Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids).unwrap())
+            } else {
+                None
+            };
+
+            (a_ids, a_mask, a_t_ids)
+        })
+        .await?;
 
         // Run the model.
-        let start = Instant::now();
-        let outputs = if self.needs_token_type_ids.unwrap() {
-            let t_ids = encodings
-                .par_iter()
-                .flat_map_iter(|e| e.get_type_ids().iter().map(|i| *i as i64))
-                .collect();
-            let a_t_ids =
-                Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids).unwrap();
-            model
-                .run(ort::inputs![a_ids, a_t_ids, a_mask].unwrap())
+
+        let embeddings_tensor = task::spawn_blocking(move || {
+            let outputs = if let Some(a_t_ids) = a_t_ids {
+                model
+                    .run(ort::inputs![a_ids, a_t_ids, a_mask].unwrap())
+                    .unwrap()
+            } else {
+                model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap()
+            };
+
+            // Extract embeddings tensor.
+            let embeddings_tensor = outputs[1]
+                .try_extract_tensor::<f32>()
                 .unwrap()
-        } else {
-            model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap()
-        };
+                .into_dimensionality::<Ix2>()
+                .unwrap();
 
-        debug!("actual inference took: {:?}", start.elapsed());
+            embeddings_tensor.to_owned()
+        })
+        .await?;
 
-        // Extract embeddings tensor.
-        let embeddings_tensor = outputs[1]
-            .try_extract_tensor::<f32>()?
-            .into_dimensionality::<Ix2>()
-            .unwrap();
-
-        Ok(Arc::new(embeddings_tensor.to_owned()))
+        Ok(Arc::new(embeddings_tensor))
     }
 
     async fn output_dtype(&self) -> anyhow::Result<ModelOutputDType> {
-        match self.output_dtype.clone() {
-            Some(dtype) => Ok(dtype),
-            None => Err(Error::msg("model not loaded")),
-        }
+        Ok(self.output_dtype.clone())
     }
 
     async fn output_dim(&self) -> anyhow::Result<i64> {
-        match self.output_dim.clone() {
-            Some(dim) => Ok(dim),
-            None => Err(Error::msg("model not loaded")),
-        }
+        Ok(self.output_dim)
     }
 }
