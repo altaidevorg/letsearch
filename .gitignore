@@ -1,6 +1,5 @@
 /target
 *.db
 *.dll
-
 *.bin
 .letsearch/
