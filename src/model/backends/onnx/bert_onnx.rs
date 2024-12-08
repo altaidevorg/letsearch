@@ -239,6 +239,6 @@ impl ONNXModelTrait for BertONNX {
     }
 
     async fn output_dim(&self) -> anyhow::Result<i64> {
-        Ok(self.output_dim.clone())
+        Ok(self.output_dim)
     }
 }
