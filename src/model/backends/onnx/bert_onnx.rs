@@ -110,7 +110,7 @@ impl ONNXModelTrait for BertONNX {
 
         let needs_token_type_ids = self.needs_token_type_ids;
 
-        let (a_ids, a_mask, a_t_ids) = task::block_in_place(move || {
+        let (a_ids, a_mask, a_t_ids) = task::spawn_blocking(move || {
             // tokenize inputs
             let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
             let padded_token_length = encodings[0].len();
@@ -138,7 +138,8 @@ impl ONNXModelTrait for BertONNX {
             };
 
             (a_ids, a_mask, a_t_ids)
-        });
+        })
+        .await?;
 
         // Run the model.
 
