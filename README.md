@@ -23,6 +23,26 @@ With its built-in support for ONNX inference (llama.cpp and GGUF support coming 
 - Convert and bring your own models.
 - Upload and/or download prebuilt collections on HuggingFace Hub easily (coming soon).
 
+## 😕 Why does it exists?
+
+Building RAG (Retrieval-Augmented Generation) or semantic search applications often involves dealing with the complexities of vector operations embedding management, and infrastructure setup. `letsearch` was created to eliminate these burdens and streamline the process of building and serving vector indexes.
+
+### Key Benefits
+
+- **No More Vector Ops Hassle**  
+  Focus on your application logic without worrying about the intricacies of vector indexing, storage, or retrieval.
+
+- **Simplified Collection Management**  
+  Easily create, manage, and share collections of embeddings, whether from JSONL, Parquet, or even HuggingFace datasets.
+
+- **From Experimentation to Production in No Time**  
+  Drastically reduce the time required to go from prototyping your RAG or search workflows to serving requests in production.
+
+- **Say Goodbye to Boilerplate**  
+  Avoid repetitive setup and integration code. `letsearch` provides a single, ready-to-run binary to embed, index, and search your documents. This is particularly useful for serverless cloud jobs and local AI applications.
+
+By combining these advantages with built-in support for ONNX models and plans for multimodal / multibackend capabilities, `letsearch` is your go-to tool for making documents AI-ready in record time.
+
 ## 🏎️ Quickstart
 
 1. Download the latest prebuilt binary from [releases](https://github.com/monatis/letsearch/releases).
@@ -36,6 +56,41 @@ Wuhu! Now you already know how to use letsearch! 🙋 It's that simple.
 
 ⚠️ **Note**: letsearch is at a early stage of development, so rapid changes in the API should be expected.
 
+## 🚧 Indexing documents
+
+```sh
+./letsearch index --collection-name test1 --index-columns context hf://datasets/neural-bridge/rag-dataset-1200/**/*.parquet
+```
+
+With a single CLI command, you:
+
+- downloaded `.parquet` files from [a HF dataset repository](https://huggingface.co/datasets/neural-bridge/rag-dataset-1200/).
+- downloaded [a model from HF Hub](https://huggingface.co/mys/minilm).
+- imported your documents to the DB.
+- embedded texts in the column `context`.
+- built a vector index.
+
+You can use local or `hf://` paths to import your documents in `.jsonl` or `.parquet` files.
+Regular paths and/or glob patterns are supported.
+
+Run:
+
+```sh
+./letsearch index --help
+```
+
+for more usage tips.
+
+## 🔍 Search
+
+Use the same binary to serve your index:
+
+```sh
+./letsearch serve -c test1
+```
+
+Then, it's quite easy to make search requests with [letsearch-client](https://github.com/monatis/letsearch-client).
+
 ## 🧮 Models
 
 - To see the models currently available on HuggingFace Hub, run:
@@ -44,11 +99,7 @@ Wuhu! Now you already know how to use letsearch! 🙋 It's that simple.
 ./letsearch list-models
 ```
 
-To convert your own models to a format that you can use with letsearch, see [this script](./scripts/export_to_onnx.py).
-
-## 🔍 Search
-
-Se [this](./scripts/test.py) for a dead simple request example. A full Python client is on the way.
+To convert your own models to a format that you can use with letsearch, see [letsearch-client](https://github.com/monatis/letsearch-client).
 
 ## 🧭 roadmap
 
