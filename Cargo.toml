@@ -40,3 +40,4 @@ lto = true
 [features]
 default = []
 heavyweight = []
+cuda = ["ort/cuda"]

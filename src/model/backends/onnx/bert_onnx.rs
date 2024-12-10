@@ -4,13 +4,18 @@ use async_trait::async_trait;
 use half::f16;
 use log::info;
 use ndarray::{Array2, Ix2};
+#[cfg(feature = "cuda")]
+use ort::CUDAExecutionProvider;
 use ort::{CPUExecutionProvider, GraphOptimizationLevel, Session};
 use rayon::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Once;
 use std::thread::available_parallelism;
 use tokenizers::{PaddingParams, Tokenizer};
 use tokio::task;
+
+static ORT_INIT: Once = Once::new();
 
 pub struct BertONNX {
     pub model: Arc<Session>,
@@ -23,12 +28,19 @@ pub struct BertONNX {
 #[async_trait]
 impl ModelTrait for BertONNX {
     async fn new(model_dir: &str, model_file: &str) -> anyhow::Result<Self> {
+        ORT_INIT.call_once(|| {
+            ort::init()
+                .with_name("onnx_model")
+                .with_execution_providers([
+                    #[cfg(feature = "cuda")]
+                    CUDAExecutionProvider::default().build(),
+                    CPUExecutionProvider::default().build(),
+                ])
+                .commit()
+                .expect("Failed to initialize ORT environment");
+        });
+
         let model_source_path = Path::new(model_dir);
-        ort::init()
-            .with_name("onnx_model")
-            .with_execution_providers([CPUExecutionProvider::default().build()])
-            .commit()
-            .expect("Failed to initialize ORT environment");
 
         let session = Session::builder()
             .unwrap()
