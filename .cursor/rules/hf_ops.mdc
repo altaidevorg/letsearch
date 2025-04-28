@@ -1,0 +1,247 @@
+---
+description: Details letsearch's hf_ops module for Hugging Face Hub interactions, including model download, listing, and metadata fetching.
+globs: src/hf_ops.rs
+alwaysApply: false
+---
+# Chapter 8: hf_ops
+
+Welcome to the final chapter of our core component tour! In [Chapter 7: ONNXModel / BertONNX](onnxmodel___bertonnx.mdc), we saw how `letsearch` executes ONNX models like BERT to generate embeddings. Those model files (like `model.onnx` and `tokenizer.json`) often reside on the Hugging Face Hub. This chapter explores the `hf_ops` module (`src/hf_ops.rs`), a dedicated utility for managing all interactions with the Hugging Face Hub.
+
+## Motivation
+
+Interacting with external APIs like the Hugging Face Hub involves several recurring tasks: constructing specific URLs, making HTTP requests, handling potential authentication, managing network errors, parsing responses (often JSON), and sometimes dealing with file downloads and local caching. Scattering this logic throughout the application, especially within the [ModelManager](modelmanager.mdc), would lead to code duplication and tight coupling.
+
+The `hf_ops` module centralizes all Hugging Face Hub communication, providing a clean API for the rest of `letsearch`. It abstracts away the details of HTTP requests (`reqwest`), JSON parsing (`serde`), progress indicators (`indicatif`), and local caching, making it easy for components like the [ModelManager](modelmanager.mdc) or the [Cli / Commands](cli___commands.mdc) to fetch models or model information from the Hub.
+
+## Central Use Case: Downloading a Model via ModelManager
+
+When the [ModelManager](modelmanager.mdc) encounters a model path starting with `hf://` (e.g., `hf://sentence-transformers/all-MiniLM-L6-v2`) during a `load_model` call, it doesn't handle the download itself. Instead, it delegates this task to `hf_ops::download_model`:
+
+```rust
+// Simplified from ModelManager::load_model
+async fn load_hf_model(
+    model_path: String, // e.g., "hf://mys/minilm"
+    model_variant: String, // e.g., "f16"
+    token: Option<String>,
+) -> anyhow::Result<(String, String)> { // Returns (local_dir, model_filename)
+
+    // Delegate the download and cache management to hf_ops
+    let (local_model_dir, local_model_filename) =
+        letsearch::hf_ops::download_model(
+            model_path.clone(), // Pass the hf:// path
+            model_variant.clone(),
+            token.clone(),
+        ).await?;
+
+    info!("Model successfully downloaded/cached from {} to {}", model_path, local_model_dir);
+    Ok((local_model_dir, local_model_filename))
+}
+```
+
+*   **Explanation:** The `ModelManager` simply passes the Hugging Face path, desired variant, and optional token to `hf_ops::download_model`. The `hf_ops` module handles checking the cache, potentially downloading multiple files (model, tokenizer config, metadata), and returns the local path to the directory containing the model files and the specific model filename for the requested variant.
+
+## Core Concepts
+
+1.  **Hugging Face Hub API Interaction:** `hf_ops` primarily interacts with two types of Hugging Face Hub endpoints:
+    *   **API Endpoints:** (`https://huggingface.co/api/models/...`) Used for fetching metadata about models (`get_model_info`) or listing models matching certain criteria (`list_models`, `get_models`). These typically return JSON responses.
+    *   **File Resolution Endpoints:** (`https://huggingface.co/{repo_id}/resolve/main/{file_name}`) Used for downloading specific files (`download_file`). These endpoints handle resolving potentially LFS-tracked files.
+
+2.  **Asynchronous HTTP Requests (`reqwest`):** All network operations are performed asynchronously using the `reqwest` crate. This ensures that `letsearch` remains responsive, especially the web server, while waiting for network responses.
+
+3.  **Authentication:** Functions like `download_file`, `get_models`, and `download_model` accept an `Option<String>` token. If a token is provided (usually sourced from the `--hf-token` CLI argument or the `HF_TOKEN` environment variable), it's added as an `Authorization: Bearer <token>` header to the outgoing `reqwest` requests, enabling access to private repositories.
+
+4.  **Local Caching:** Downloads are cached locally to avoid redundant network traffic.
+    *   **Cache Location:** Files are stored under `~/.letsearch/models/` (or a platform-specific equivalent obtained via `home_dir()`) within a structure mirroring the Hugging Face repository ID: `~/.letsearch/models/<user_or_org>/<repo_name>/`.
+    *   **Cache Check:** Before attempting a download, `download_file` checks if the target file already exists in the cache directory. If it does, the download is skipped, and the existing path is returned immediately.
+
+5.  **Progress Indication (`indicatif`):** The `download_file` function uses `indicatif::ProgressBar` to display download progress for larger files. It shows the percentage complete, bytes downloaded/total, and estimated time remaining, providing useful feedback to the user during potentially long downloads. The `list_models` function uses a spinner for visual feedback while waiting for the API response.
+
+6.  **`letsearch` Model Structure (`metadata.json`):** For a Hugging Face repository to be compatible with `letsearch`'s `download_model` function, it *must* contain a `metadata.json` file at its root. This file specifies:
+    *   `letsearch_version`: An integer indicating compatibility (currently expected to be `1`).
+    *   `variants`: An array of objects, each describing a supported model variant (e.g., different quantization levels like `f32`, `f16`, `i8`). Each variant object must contain:
+        *   `variant`: The name of the variant (e.g., `"f16"`).
+        *   `path`: The relative path within the repository to the ONNX model file for this variant (e.g., `"model_f16.onnx"`).
+    *   `required_files`: An optional array of strings listing other essential files that must be downloaded alongside the model (e.g., `["tokenizer.json", "config.json"]`).
+    `download_model` parses this file to determine which specific model file to download based on the requested `variant` and which other supporting files are needed.
+
+7.  **Error Handling:** Functions return `anyhow::Result` to propagate errors. Common errors include network issues (timeouts, connection refused), HTTP errors (404 Not Found, 401 Unauthorized if the token is invalid/missing for private repos), file system errors (cannot create cache directory), or parsing errors (invalid `metadata.json` format).
+
+## Using `hf_ops`
+
+The primary consumers of `hf_ops` are the [ModelManager](modelmanager.mdc) and the CLI logic in `main.rs`.
+
+*   **Downloading Models:** As shown in the Central Use Case, `ModelManager::load_model` calls `hf_ops::download_model`.
+
+    ```rust
+    // Inside ModelManager::load_model
+    if model_path.starts_with("hf://") {
+        // Delegate to hf_ops
+        let (resolved_dir, resolved_file) = download_model(
+            model_path.clone(),
+            model_variant.clone(),
+            token // Optional token
+        ).await?;
+        // Use resolved_dir and resolved_file for local loading
+        // ... BertONNX::new(resolved_dir, resolved_file)...
+    } else {
+        // Handle local path directly
+    }
+    ```
+    *   **Explanation:** This snippet shows the conditional delegation based on the `hf://` prefix. `download_model` encapsulates the entire download and caching process.
+
+*   **Listing Models:** The `ListModels` command in `main.rs` uses `hf_ops::list_models`.
+
+    ```rust
+    // Inside main.rs, handling Commands::ListModels
+    Commands::ListModels { hf_token } => {
+        // Prioritize CLI token, fallback to env var
+        let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
+        // Call hf_ops function
+        list_models(token).await?;
+    }
+    ```
+    *   **Explanation:** The CLI command handler retrieves the optional token and passes it directly to `hf_ops::list_models`, which handles the API call, spinner, and printing the results.
+
+## Internal Implementation
+
+Let's look at the core logic of the main functions.
+
+**1. `download_file` Walkthrough:**
+
+1.  Construct the full destination path within the cache directory (`destination_dir.join(file_name)`).
+2.  Check if `destination_path` exists. If yes, return `Ok(path)`.
+3.  Construct the download URL: `https://huggingface.co/{repo_id}/resolve/main/{file_name}`.
+4.  Build a `reqwest::Client`.
+5.  Create a GET request builder. Add the `Authorization` header if `token` is `Some`.
+6.  Send the request: `client.get(...).send().await?`.
+7.  Check if `response.status().is_success()`. If not, return an error.
+8.  Extract `Content-Length` from headers for the progress bar total.
+9.  Create the output file: `File::create(&destination_path)?`.
+10. Initialize `indicatif::ProgressBar` with the total size.
+11. Get the response body as a byte stream: `response.bytes_stream()`.
+12. Loop through chunks from the stream (`while let Some(Ok(chunk)) = source.next().await`).
+13. Write the `chunk` to the file.
+14. Update the progress bar position (`progress_bar.set_position(...)`).
+15. After the loop, finish the progress bar (`progress_bar.finish_with_message(...)`).
+16. Return `Ok(destination_path)`.
+
+```rust
+// Simplified src/hf_ops.rs - download_file structure
+async fn download_file(
+    repo_id: &str,
+    file_name: &str,
+    destination_dir: PathBuf,
+    token: Option<String>,
+) -> anyhow::Result<String> {
+    // --- 1-2. Cache Check ---
+    let destination_path = destination_dir.join(file_name);
+    if destination_path.exists() { return Ok(/* path */); }
+    fs::create_dir_all(destination_dir.clone())?; // Ensure dir exists
+
+    // --- 3-6. Prepare and Send Request ---
+    let url = format!(/* ... download url ... */);
+    let client = reqwest::Client::new();
+    let mut request_builder = client.get(&url);
+    if let Some(t) = token { request_builder = request_builder.bearer_auth(t); }
+    let response = request_builder.send().await?;
+
+    // --- 7. Status Check ---
+    if !response.status().is_success() { /* return Err */ }
+
+    // --- 8-10. Setup File & Progress Bar ---
+    let total_size = /* ... get content length ... */ 0;
+    let mut file = File::create(&destination_path)?;
+    let pb = ProgressBar::new(total_size); /* ... set style ... */
+
+    // --- 11-14. Stream, Write, Update Progress ---
+    let mut stream = response.bytes_stream();
+    let mut downloaded: u64 = 0;
+    while let Some(item) = stream.next().await {
+        let chunk = item?;
+        file.write_all(&chunk)?;
+        downloaded += chunk.len() as u64;
+        pb.set_position(downloaded);
+    }
+
+    // --- 15-16. Finish & Return ---
+    pb.finish_with_message("Download complete");
+    Ok(destination_path.to_string_lossy().to_string())
+}
+```
+*   **Explanation:** This highlights the key steps: cache check, request building/sending, response streaming, file writing, and progress reporting.
+
+**2. `download_model` Walkthrough:**
+
+1.  Determine the base cache directory using `home_dir()`.
+2.  Parse the `repo_id` from the `model_path` (removing `hf://`).
+3.  Construct the specific destination directory path within the cache.
+4.  Call `download_file` to get `metadata.json`.
+5.  Read and parse `metadata.json` using `serde_json::from_str`.
+6.  Validate `letsearch_version`.
+7.  Find the object in the `variants` array where `variant` matches the requested `variant`. Return error if not found.
+8.  Extract the ONNX model filename (`path`) from the found variant object.
+9.  Call `download_file` to get the specific ONNX model file (using the extracted filename). Store the returned local path.
+10. If `required_files` exists in `metadata.json`, iterate through the list. For each required filename, call `download_file`.
+11. Extract the parent directory and the filename from the downloaded ONNX model path.
+12. Return `Ok((model_dir, model_file))`.
+
+**Sequence Diagram (`download_model`):**
+
+```mermaid
+sequenceDiagram
+    participant MM as ModelManager
+    participant HFOps as hf_ops
+    participant Cache as Local Cache
+    participant HFAPI as Hugging Face API/CDN
+
+    MM->>+HFOps: download_model("hf://org/model", "f16", token)
+    HFOps->>Cache: Check cache for metadata.json
+    alt Cache miss
+        HFOps->>+HFAPI: GET .../resolve/main/metadata.json (w/ token)
+        HFAPI-->>-HFOps: metadata.json content
+        HFOps->>Cache: Save metadata.json
+    end
+    HFOps->>HFOps: Parse metadata.json, find variant "f16", get model_filename="model_f16.onnx"
+    HFOps->>Cache: Check cache for model_f16.onnx
+    alt Cache miss
+        HFOps->>+HFAPI: GET .../resolve/main/model_f16.onnx (w/ token)
+        HFAPI-->>-HFOps: model_f16.onnx content (streamed)
+        HFOps->>Cache: Save model_f16.onnx (with progress)
+    end
+    HFOps->>HFOps: Check metadata.json for required_files (e.g., "tokenizer.json")
+    HFOps->>Cache: Check cache for tokenizer.json
+    alt Cache miss
+        HFOps->>+HFAPI: GET .../resolve/main/tokenizer.json (w/ token)
+        HFAPI-->>-HFOps: tokenizer.json content
+        HFOps->>Cache: Save tokenizer.json
+    end
+    HFOps-->>-MM: Ok(("/path/to/cache/org/model", "model_f16.onnx"))
+
+```
+
+**3. `list_models` Walkthrough:**
+
+1.  Setup an `indicatif::ProgressBar` spinner.
+2.  Call the internal `get_models("letsearch", token)` function.
+    *   Inside `get_models`:
+        *   Construct URL: `https://huggingface.co/api/models?filter=letsearch`.
+        *   Build `reqwest::Client`.
+        *   Create GET request builder, add `Authorization` header if `token` exists.
+        *   Send request.
+        *   Check status, return error if not successful.
+        *   Deserialize JSON response body into `Vec<Model>`.
+        *   Return `Ok(models)`.
+3.  Check if the returned `models` vector is empty. Print message if so.
+4.  If not empty, finish the spinner with a success message.
+5.  Sort models (e.g., by downloads).
+6.  Iterate through the sorted `models` and print each `model.modelId` prefixed with `hf://`.
+7.  Print a concluding message about using `--hf-token` for private models.
+
+## Conclusion
+
+The `hf_ops` module serves as a vital bridge between `letsearch` and the Hugging Face Hub ecosystem. It encapsulates the necessary logic for interacting with the Hub's API and file servers, handling downloads, authentication, caching, and progress reporting cleanly. This abstraction allows components like the [ModelManager](modelmanager.mdc) and the CLI to easily leverage models hosted on the Hub without being burdened by the underlying communication details. This concludes our detailed tour of the core components of `letsearch`. You now have a comprehensive understanding of how the application processes commands, serves requests, manages data collections, handles embedding models, performs vector searches, and interacts with external resources like the Hugging Face Hub.
+
+
+---
+
+Generated by [Rules for AI](https://github.com/altaidevorg/rules-for-ai)

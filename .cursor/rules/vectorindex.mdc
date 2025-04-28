@@ -1,0 +1,284 @@
+---
+description: letsearch tutorial: VectorIndex abstraction over usearch for managing, saving, loading, and searching vector indices.
+globs: src/collection/vector_index.rs
+alwaysApply: false
+---
+# Chapter 6: VectorIndex
+
+In the previous chapter, [Chapter 5: ModelManager](modelmanager.mdc), we learned how `letsearch` manages the loading and execution of embedding models. Those models produce vector embeddings, which need to be efficiently stored and searched for similarity. This chapter focuses on the `VectorIndex` struct, the component responsible for precisely this task.
+
+## Motivation
+
+Vector similarity search libraries like `usearch` offer powerful low-level primitives for building and querying ANN (Approximate Nearest Neighbor) indices. However, integrating such libraries directly into an application requires handling aspects like:
+*   Managing the index lifecycle (creation, saving, loading).
+*   Mapping application-specific identifiers (like the `_key` from [Chapter 4: Collection](collection.mdc)) to vectors within the index.
+*   Configuring index parameters (dimensions, distance metric, data type/quantization) based on the embedding model used.
+*   Optimizing batch insertion performance.
+*   Providing a consistent API for search results.
+
+The `VectorIndex` struct in `letsearch` acts as an abstraction layer over `usearch`, specifically tailored to address these needs. It encapsulates a single `usearch` index, manages its persistence, and provides methods optimized for `letsearch`'s workflow, particularly for adding batches of vectors associated with unique `u64` keys and returning standardized search results.
+
+## Central Use Case: Indexing and Searching Embeddings for a Column
+
+Recall the `embed_column` process in the [Collection](collection.mdc). After obtaining a batch of text data and corresponding `_key` values from DuckDB, and then generating their embeddings using the [ModelManager](modelmanager.mdc), the `Collection` interacts with its `VectorIndex` instance for that specific column:
+
+1.  **Add Batch:** The `Collection` calls `vector_index.add(&keys, embeddings_ptr, dimension)` to insert the newly generated embeddings into the index, associating each vector with its original `_key`. This happens in parallel for efficiency.
+2.  **Save:** Once all batches for a column are processed, the `Collection` calls `vector_index.save()` to persist the index state to disk (`index.bin`).
+3.  **Search:** When handling a search request, the `Collection` uses the [ModelManager](modelmanager.mdc) to get the query vector embedding. It then calls `vector_index.search(query_embedding_ptr, dimension, limit)` to find the `limit` most similar vectors. The method returns a `Vec<SimilarityResult>`, each containing a `key` (the original `_key`) and a `score`. The `Collection` then uses these keys to retrieve the full documents from DuckDB.
+
+## Core Concepts
+
+1.  **Usearch Abstraction:** `VectorIndex` wraps an `Option<usearch::Index>`. This hides the direct `usearch` API details from the rest of the application, providing a simpler, purpose-built interface.
+
+2.  **Initialization and Configuration (`new`, `with_options`):**
+    *   `VectorIndex::new(path, overwrite)`: Creates a new instance, setting up the directory specified by `path`. It doesn't create the actual `usearch` index yet.
+    *   `VectorIndex::with_options(&options, capacity)`: Initializes the internal `usearch::Index` using the provided `usearch::IndexOptions` (dimensionality, metric, quantization derived from the embedding model) and reserves an initial `capacity`. This is typically called by the [Collection](collection.mdc) right before the first `add` operation for a column.
+
+3.  **Persistence (`save`, `from`):**
+    *   `VectorIndex::save()`: Serializes the current state of the internal `usearch::Index` to a file named `index.bin` within the directory specified during `new()`.
+    *   `VectorIndex::from(path)`: Loads an existing index by deserializing `index.bin` from the given `path`. This is used when loading an existing [Collection](collection.mdc).
+
+4.  **Batch Vector Addition (Parallel) (`add`):**
+    *   The `add<T: VectorType>(&keys, vectors_ptr, vector_dim)` method is designed for efficient batch insertion.
+    *   It takes a slice of `u64` keys and a raw pointer (`*const T`) to the contiguous block of vector data (where `T` is the vector element type, e.g., `f16` or `f32`).
+    *   Crucially, it uses `rayon::prelude::*` to parallelize the addition process over the input keys. Each thread calculates the offset into the vector data block for its assigned key and calls `usearch::Index::add`.
+    *   A helper struct `PtrBox` wraps the raw pointer to make it safely shareable (`Send + Sync`) across threads within Rayon's parallel iterator.
+    *   It automatically handles reserving more capacity in the underlying `usearch` index if needed.
+
+5.  **Approximate Nearest Neighbor (ANN) Search (`search`):**
+    *   The `search<T: VectorType>(vector_ptr, vector_dim, count)` method performs the ANN search.
+    *   It takes a pointer to the query vector, its dimension, and the desired number of results (`count`).
+    *   It calls the underlying `usearch::Index::search`.
+    *   It converts the raw `usearch` results (keys and distances) into a `Vec<SimilarityResult>`, where each `SimilarityResult` contains the `key` (u64) and a similarity `score` (calculated as `1.0 - distance` for typical metrics like Cosine).
+
+## Using VectorIndex
+
+The `VectorIndex` is primarily used internally by the [Collection](collection.mdc) struct.
+
+**1. Creation and Configuration (within `Collection::embed_column`):**
+
+```rust
+// Simplified from Collection::embed_column
+// ... determine vector_dim, scalar_kind (quantization) from ModelManager ...
+// ... determine index_path ...
+
+let options = IndexOptions {
+    dimensions: vector_dim as usize,
+    metric: MetricKind::Cos, // Or other metric
+    quantization: scalar_kind,
+    // other options...
+    multi: true, // Allow multiple vectors per key if needed (usually false)
+};
+// Initial capacity estimate (e.g., total rows + buffer)
+let initial_capacity = count + (count / 10); 
+
+let mut index = VectorIndex::new(index_path, true)?; // Create instance
+index.with_options(&options, initial_capacity)?; // Initialize usearch index
+
+// Store Arc<RwLock<VectorIndex>> in the Collection's map
+// ...
+```
+*   **Explanation:** A new `VectorIndex` is created, specifying its storage path. Then, `with_options` is called to initialize the underlying `usearch::Index` with parameters derived from the embedding model and reserve initial capacity.
+
+**2. Adding Batches (within `Collection::embed_column_with_offset`):**
+
+```rust
+// Simplified from Collection::embed_column_with_offset
+// Inputs: keys: Vec<u64>, embeddings: Arc<Array2<T>> (where T is f16 or f32)
+//         vector_dim: usize
+
+let embeddings_ptr = embeddings.as_ptr(); // Get raw pointer to embedding data
+let index_guard = vector_index_arc.write().await; // Lock the specific VectorIndex
+
+index_guard.add::<T>(&keys, embeddings_ptr, vector_dim).await?;
+
+// Write lock released when index_guard goes out of scope
+```
+*   **Explanation:** The raw pointer to the embedding data and the corresponding keys are passed to the `add` method. The `VectorIndex` handles the parallel insertion internally.
+
+**3. Saving and Loading:**
+
+```rust
+// Saving (typically at the end of Collection::embed_column)
+vector_index_arc.read().await.save()?;
+
+// Loading (within Collection::from)
+let index_path = /* ... path to index directory ... */;
+let loaded_index = VectorIndex::from(index_path)?; 
+// Store Arc<RwLock<VectorIndex>> in Collection's map
+```
+*   **Explanation:** `save` persists the index state. `from` reconstitutes a `VectorIndex` instance by loading the data from the specified path.
+
+**4. Searching (within `Collection::search`):**
+
+```rust
+// Simplified from Collection::search
+// Input: query_embedding: Array1<T>, vector_dim: usize, limit: usize
+
+let query_ptr = query_embedding.as_ptr();
+let index_guard = vector_index_arc.read().await; // Read lock the index
+
+let results: Vec<SimilarityResult> = index_guard
+    .search::<T>(query_ptr, vector_dim, limit)
+    .await?;
+    
+// Use results (Vec<SimilarityResult { key: u64, score: f32 }>) 
+// to fetch data from DuckDB
+```
+*   **Explanation:** The `search` method takes the query vector pointer and returns a list of `SimilarityResult` structs containing the keys and similarity scores of the nearest neighbors.
+
+## Internal Implementation
+
+Let's look closer at the `add` and `search` methods.
+
+**1. Adding Vectors (`add`):**
+
+*   **Walkthrough:**
+    1.  Get a reference to the internal `usearch::Index`.
+    2.  Check if the current capacity is sufficient for the new batch; if not, call `index.reserve()` to increase capacity (e.g., by 10% extra).
+    3.  Wrap the input `vectors_ptr` in `Arc::new(PtrBox { ptr: vectors_ptr })` to allow safe sharing across threads. `PtrBox` is a simple wrapper marked `unsafe impl Send + Sync`.
+    4.  Use `keys.par_iter().enumerate().for_each(...)` to iterate over the keys in parallel using Rayon.
+    5.  Inside the parallel loop for each key `_key` at index `i`:
+        a.  Clone the `Arc<PtrBox>`.
+        b.  Calculate the memory offset for the i-th vector: `vectors.ptr.add(i * vector_dim)`.
+        c.  Create a slice `vector: &[T]` pointing to the correct vector data using `std::slice::from_raw_parts`.
+        d.  Call `index.add(keys[i], vector)` to add the key and its corresponding vector slice to the `usearch` index. Handle potential errors.
+
+*   **Sequence Diagram (`add`):**
+    ```mermaid
+    sequenceDiagram
+        participant Col as Collection
+        participant VI as VectorIndex
+        participant PtrBoxArc as Arc<PtrBox<T>>
+        participant RayonPool as Rayon Thread Pool
+        participant UIndex as usearch::Index
+
+        Col->>+VI: add(&keys, vectors_ptr, dim)
+        VI->>UIndex: Check/Reserve Capacity
+        VI->>VI: Create PtrBoxArc (wrapping vectors_ptr)
+        VI->>RayonPool: par_iter(&keys).enumerate().for_each(|(i, key)| ...)
+        Note over RayonPool: Spawns multiple parallel tasks
+        RayonPool->>RayonPool: Clone PtrBoxArc
+        RayonPool->>RayonPool: Calculate vector offset `ptr.add(i * dim)`
+        RayonPool->>RayonPool: Create slice `&[T]` from offset+dim
+        RayonPool->>UIndex: add(key, vector_slice)
+        UIndex-->>RayonPool: Ok/Err
+        RayonPool-->>VI: Iteration complete
+        VI-->>-Col: Ok/Err
+    ```
+
+*   **Code Snippets (`src/collection/vector_index.rs`):**
+    ```rust
+    use rayon::prelude::*;
+    use std::sync::Arc;
+    use usearch::{Index, VectorType};
+    use std::path::PathBuf;
+
+    // Helper struct to safely share the raw pointer
+    struct PtrBox<T: VectorType> { ptr: *const T }
+    unsafe impl<T: VectorType> Send for PtrBox<T> {}
+    unsafe impl<T: VectorType> Sync for PtrBox<T> {}
+
+    pub struct VectorIndex {
+        pub index: Option<Index>,
+        path: PathBuf,
+    }
+
+    impl VectorIndex {
+        pub async fn add<T: VectorType>(
+            &self,
+            keys: &Vec<u64>,
+            vectors_ptr: *const T,
+            vector_dim: usize,
+        ) -> anyhow::Result<()> {
+            let index = self.index.as_ref().unwrap();
+            // --- Capacity check and reservation ---
+            let count = keys.len();
+            let required_capacity = index.size() + count;
+            if required_capacity > index.capacity() {
+                index.reserve((required_capacity as f64 * 1.1) as usize)?;
+            }
+
+            // --- Parallel addition using Rayon ---
+            let shared_vectors = Arc::new(PtrBox { ptr: vectors_ptr });
+            keys.par_iter().enumerate().for_each(|(i, _key)| {
+                let vectors = shared_vectors.clone();
+                let vector_offset = unsafe { vectors.ptr.add(i * vector_dim) };
+                let vector: &[T] = unsafe { 
+                    std::slice::from_raw_parts(vector_offset, vector_dim) 
+                };
+                // Add the key and its corresponding vector slice
+                index.add(keys[i], vector).unwrap(); // Handle error properly
+            });
+
+            Ok(())
+        }
+        // ... other methods: new, with_options, from, save, search ...
+    }
+    ```
+    *   **Explanation:** This snippet highlights the capacity check, the `PtrBox` wrapper for the shared pointer, and the `par_iter` loop which calculates offsets and calls `index.add`.
+
+**2. Searching Vectors (`search`):**
+
+*   **Walkthrough:**
+    1.  Get a reference to the internal `usearch::Index`.
+    2.  Create a slice `query_vector: &[T]` pointing to the query vector data using `std::slice::from_raw_parts(vector_ptr, vector_dim)`.
+    3.  Call `index.search(query_vector, count)` to perform the ANN search in `usearch`. This returns a `Matches` struct containing `keys` and `distances`.
+    4.  Iterate through the `matches.keys` and `matches.distances` simultaneously using `zip`.
+    5.  For each pair `(key, distance)`, create a `SimilarityResult` struct with `key: *key` and `score: 1.0 - *distance`.
+    6.  Collect these results into a `Vec<SimilarityResult>` and return it.
+
+*   **Code Snippets (`src/collection/vector_index.rs`):**
+    ```rust
+    use usearch::{Index, VectorType};
+    use serde::Serialize;
+
+    #[derive(Serialize, Debug)] // Added Debug
+    pub struct SimilarityResult {
+        pub key: u64,
+        pub score: f32,
+    }
+    
+    impl VectorIndex {
+        pub async fn search<T: VectorType>(
+            &self,
+            vector_ptr: *const T,
+            vector_dim: usize,
+            count: usize,
+        ) -> anyhow::Result<Vec<SimilarityResult>> {
+            let query_vector: &[T] = unsafe { 
+                std::slice::from_raw_parts(vector_ptr, vector_dim) 
+            };
+            let index = self.index.as_ref().unwrap();
+
+            // Perform the search using the underlying usearch index
+            let matches = index.search(query_vector, count)?;
+
+            // Convert usearch results to SimilarityResult
+            let results: Vec<SimilarityResult> = matches
+                .keys
+                .iter()
+                .zip(matches.distances.iter())
+                .map(|(key, distance)| SimilarityResult {
+                    key: *key,
+                    score: 1.0 - *distance, // Convert distance to similarity score
+                })
+                .collect();
+
+            Ok(results)
+        }
+        // ... other methods ...
+    }
+    ```
+    *   **Explanation:** This shows how the query vector slice is created, `index.search` is called, and the results are mapped to the `SimilarityResult` struct, converting distance to score.
+
+## Conclusion
+
+The `VectorIndex` provides a crucial abstraction layer over the `usearch` library within `letsearch`. It simplifies the process of managing vector indices by handling configuration, persistence, efficient parallel batch additions linked to unique keys, and standardized search result formatting. This allows the [Collection](collection.mdc) to focus on orchestrating data flow rather than the low-level details of ANN index management.
+
+With the data stored in DuckDB ([Collection](collection.mdc)), models managed ([ModelManager](modelmanager.mdc)), and vectors indexed ([VectorIndex](vectorindex.mdc)), the next chapter, [Chapter 7: ONNXModel / BertONNX](onnxmodel___bertonnx.mdc), will delve into the specific implementation details of how `letsearch` interacts with ONNX models, like BERT, to actually generate the vector embeddings.
+
+
+---
+
+Generated by [Rules for AI](https://github.com/altaidevorg/rules-for-ai)

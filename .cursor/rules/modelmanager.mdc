@@ -1,0 +1,308 @@
+---
+description: Details letsearch's ModelManager, responsible for loading, managing, and providing predictions from embedding models (e.g., ONNX).
+globs: src/model/model_manager.rs
+alwaysApply: false
+---
+# Chapter 5: ModelManager
+
+In [Chapter 4: Collection](collection.mdc), we saw how a `Collection` encapsulates data and relies on embedding models for generating vector representations. This chapter introduces the `ModelManager`, the component responsible for the lifecycle and prediction capabilities of these embedding models within `letsearch`.
+
+## Motivation
+
+Directly managing embedding models within each `Collection` or throughout the application can lead to several challenges: redundant loading of the same model, tight coupling to specific model implementations (like ONNX), and complexities in handling model downloads and caching. The `ModelManager` solves these problems by:
+
+1.  **Abstraction:** Providing a unified interface for interacting with models, hiding the underlying implementation details (e.g., ONNX runtime specifics).
+2.  **Lifecycle Management:** Handling the loading, potential downloading, and storage of models.
+3.  **Efficiency (Flyweight):** Assigning unique IDs to loaded model variants and reusing existing instances, preventing the same model from being loaded into memory multiple times.
+4.  **Decoupling:** Separating model management logic from collection management logic.
+5.  **Thread Safety:** Ensuring that models can be loaded and used concurrently from different parts of the application (like multiple web server requests or parallel indexing tasks) without data races, using `tokio::sync::RwLock`.
+
+## Central Use Case: Loading and Using a Model for Embedding
+
+When a `Collection` needs to embed a column (as described in Chapter 4), the [CollectionManager](collectionmanager.mdc) interacts with the `ModelManager`:
+
+1.  **Request Model Load:** The `CollectionManager`, upon creating or loading a `Collection`, identifies the required model (e.g., `"hf://sentence-transformers/all-MiniLM-L6-v2"` with variant `"f16"`). It calls `model_manager.load_model(...)` with these details.
+2.  **Load/Download:** The `ModelManager` checks if this specific model variant is already loaded.
+    *   If not, it checks if the path starts with `hf://`. If so, it uses the [hf_ops](hf_ops.mdc) module to download the necessary model files from the Hugging Face Hub to a local cache directory.
+    *   It then instantiates the appropriate backend model object (e.g., `BertONNX` implementing the `ONNXModel` trait, see [ONNXModel / BertONNX](onnxmodel___bertonnx.mdc)).
+    *   It assigns a new unique `model_id` (e.g., `1`).
+    *   It stores the model instance (wrapped in `Arc<RwLock<...>>`) in its internal registry, mapped by the `model_id`.
+3.  **Return ID:** The `ModelManager` returns the `model_id` (e.g., `1`) to the `CollectionManager`.
+4.  **Store ID:** The `CollectionManager` stores this `model_id` locally (e.g., in its `model_lookup` cache) for future use with this collection.
+5.  **Prediction:** Later, during the embedding process, the `Collection` (via the `CollectionManager`) calls `model_manager.predict(model_id, batch_of_texts)` using the stored `model_id`. The `ModelManager` retrieves the corresponding model instance and delegates the prediction task.
+
+## Core Concepts
+
+1.  **Model Registry and IDs (Flyweight Pattern):**
+    *   `ModelManager` maintains an internal `HashMap<u32, Arc<RwLock<dyn ONNXModel>>>`. The key is a unique `u32` ID assigned sequentially (`next_id`), and the value is a thread-safe, shareable reference to the loaded model instance.
+    *   Using `Arc` allows multiple components (e.g., different collections needing the same model) to share ownership of the *same* model instance without duplicating it in memory.
+    *   Using `RwLock` ensures that multiple threads can *read* (predict) from the model concurrently, while loading/modifying the registry requires exclusive write access.
+    *   This ID-based lookup acts like a Flyweight pattern: the manager ensures only one instance of each specific model variant (path + variant) is loaded, identified by its ID.
+
+    ```rust
+    // src/model/model_manager.rs (Simplified Struct)
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use super::model_utils::ONNXModel; // The trait for ONNX models
+
+    pub struct ModelManager {
+        // Map from unique ID to the loaded model instance
+        models: RwLock<HashMap<u32, Arc<RwLock<dyn ONNXModel>>>>,
+        // Counter for assigning the next model ID
+        next_id: RwLock<u32>,
+    }
+    ```
+    *Explanation:* Defines the core state: a thread-safe map holding models keyed by ID, and a thread-safe counter for generating IDs.
+
+2.  **Model Loading and Hugging Face Integration:**
+    *   The `load_model` method is the entry point. It takes the model path (which can be local or `hf://...`), variant (e.g., `"f16"`, `"i8"`), backend type (currently only `Backend::ONNX`), and an optional Hugging Face token.
+    *   If `model_path` starts with `hf://`, it delegates to `hf_ops::download_model` (see [hf_ops](hf_ops.mdc)) to fetch the model files from the Hub and cache them locally. `download_model` returns the local path to the downloaded model directory and the specific model filename.
+    *   It then instantiates the concrete model implementation (e.g., `BertONNX::new(...)`) which loads the ONNX model file into memory using the `ort` crate.
+
+3.  **Backend Abstraction (`ONNXModel` Trait):**
+    *   The `ModelManager` doesn't depend directly on `BertONNX`. Instead, it holds instances of types implementing the `ONNXModel` trait (defined in `src/model/model_utils.rs`).
+    *   This trait defines the common interface for ONNX-based models, including methods like `predict_f16`, `predict_f32`, `output_dim`, and `output_dtype`. (See [ONNXModel / BertONNX](onnxmodel___bertonnx.mdc)).
+    *   This allows potentially swapping or adding different ONNX model architectures in the future without changing the `ModelManager` itself, as long as they implement the `ONNXModel` trait.
+
+4.  **Unified Prediction Interface:**
+    *   Instead of exposing model-specific prediction methods, `ModelManager` offers generic `predict`, `predict_f16`, and `predict_f32` methods that accept the `model_id`.
+    *   These methods look up the `Arc<RwLock<dyn ONNXModel>>` using the ID, acquire a read lock on the specific model, and call the corresponding method (`predict_f16` or `predict_f32`) on the trait object.
+    *   The `predict` method first queries the model's `output_dtype` and then calls the appropriate typed prediction method (`predict_f16` or `predict_f32`), returning the result wrapped in an `Embeddings` enum (`Embeddings::F16` or `Embeddings::F32`).
+
+    ```rust
+    // src/model/model_manager.rs (Simplified predict)
+    use super::model_utils::{Embeddings, ModelOutputDType};
+    use anyhow::Error;
+
+    impl ModelManager {
+        pub async fn predict(&self, model_id: u32, texts: Vec<&str>) -> anyhow::Result<Embeddings> {
+            // Determine the expected output type first
+            let output_dtype = self.output_dtype(model_id).await?;
+            match output_dtype {
+                ModelOutputDType::F16 => {
+                    let embeddings = self.predict_f16(model_id, texts).await?;
+                    Ok(Embeddings::F16(embeddings.to_owned())) // Clone Arc<Array2<f16>>
+                }
+                ModelOutputDType::F32 => {
+                    let embeddings = self.predict_f32(model_id, texts).await?;
+                    Ok(Embeddings::F32(embeddings.to_owned())) // Clone Arc<Array2<f32>>
+                }
+                ModelOutputDType::Int8 => unimplemented!("int8 prediction not implemented"),
+            }
+        }
+        // ... predict_f16, predict_f32 delegate similarly ...
+    }
+    ```
+    *Explanation:* The unified `predict` method dynamically calls the correct underlying typed prediction method based on the model's metadata.
+
+5.  **Metadata Querying:**
+    *   Methods like `output_dim(model_id)` and `output_dtype(model_id)` allow querying essential metadata about a loaded model using its ID.
+    *   These methods look up the model by ID, acquire a read lock, and call the corresponding methods defined in the `ONNXModel` trait. This is used, for example, by the `Collection` to configure the [VectorIndex](vectorindex.mdc) dimensions and data type.
+
+## Using ModelManager
+
+The `ModelManager` is primarily used internally by the [CollectionManager](collectionmanager.mdc). Here's a conceptual example of how `CollectionManager` might use it when setting up a collection:
+
+```rust
+// Conceptual usage within CollectionManager::create_collection or load_collection
+async fn setup_collection_models(
+    &self, // Assuming self has access to self.model_manager: Arc<RwLock<ModelManager>>
+    collection_config: &CollectionConfig,
+    token: Option<String>,
+) -> anyhow::Result<u32> { // Returns the model_id
+
+    let model_path = collection_config.model_name.clone(); // e.g., "hf://org/model"
+    let model_variant = collection_config.model_variant.clone(); // e.g., "f16"
+    let backend = Backend::ONNX; // Currently fixed
+
+    // Acquire write lock on ModelManager to potentially load a new model
+    let manager_guard = self.model_manager.write().await;
+
+    // Check if this model variant is already loaded (conceptual - actual manager handles this internally)
+    // if not manager_guard.is_loaded(&model_path, &model_variant) { ... }
+
+    // Ask ModelManager to load the model (downloads if necessary)
+    let model_id = manager_guard.load_model(
+        model_path,
+        model_variant,
+        backend,
+        token,
+    ).await?;
+
+    // manager_guard lock is released when it goes out of scope
+
+    Ok(model_id) // Return the ID for the CollectionManager to store
+}
+```
+*Explanation:* Demonstrates how the `CollectionManager` requests a model load via `load_model`, providing the necessary details. The `ModelManager` handles the complexity of checking, downloading, loading, and returning a unique ID.
+
+Later, during search or embedding:
+
+```rust
+// Conceptual usage within CollectionManager::search or Collection::embed_column
+async fn get_embeddings(
+    &self, // Assuming self has access to self.model_manager: Arc<RwLock<ModelManager>>
+    model_id: u32, // The ID obtained during setup
+    texts: Vec<&str>,
+) -> anyhow::Result<Embeddings> {
+
+    // Acquire read lock on ModelManager to perform prediction
+    let manager_guard = self.model_manager.read().await;
+
+    // Use the unified predict interface with the model ID
+    let embeddings = manager_guard.predict(model_id, texts).await?;
+
+    // manager_guard lock is released when it goes out of scope
+
+    Ok(embeddings)
+}
+```
+*Explanation:* Shows how prediction is requested using the `model_id` via the `predict` method. The `ModelManager` handles looking up the correct model instance.
+
+## Internal Implementation
+
+Let's trace the `load_model` process:
+
+1.  **Input:** `model_path`, `model_variant`, `model_type`, `token`.
+2.  **Path Handling:** Check if `model_path` starts with `"hf://"`.
+    *   If yes, call `hf_ops::download_model(model_path, model_variant, token)`. This handles the download and returns the local directory (`model_dir`) and model filename (`model_file`).
+    *   If no, assume `model_path` is a local directory and `model_variant` is the filename. Set `model_dir = model_path`, `model_file = model_variant`.
+3.  **Instantiate Backend:** Based on `model_type` (currently only `Backend::ONNX`), create the model instance: `let model = Arc::new(RwLock::new(BertONNX::new(model_dir, model_file).await?));`. This involves loading the ONNX session via the `ort` crate.
+4.  **Get New ID:** Acquire a write lock on `self.next_id`. Read the current value, increment it, and store the new value. Release the lock.
+5.  **Store Model:** Acquire a write lock on `self.models` HashMap. Insert the `model_id` and the `Arc<RwLock<dyn ONNXModel>>`. Release the lock.
+6.  **Return ID:** Return the generated `model_id`.
+
+**Sequence Diagram (`load_model` with Hugging Face path):**
+
+```mermaid
+sequenceDiagram
+    participant CM as CollectionManager
+    participant MM as ModelManager
+    participant HFOps as hf_ops
+    participant BertONNXType as BertONNX::new()
+    participant ModelsMap as models (HashMap)
+    participant NextId as next_id (u32)
+
+    CM->>+MM: load_model("hf://org/model", "f16", ONNX, token)
+    MM->>+HFOps: download_model("hf://org/model", "f16", token)
+    HFOps-->>-MM: Returns Ok(("/local/cache/path", "model.onnx"))
+    MM->>+BertONNXType: new("/local/cache/path", "model.onnx")
+    BertONNXType-->>-MM: Returns Ok(bert_onnx_instance)
+    MM->>MM: Wrap instance in Arc<RwLock<...>>
+    MM->>+NextId: write().await (acquire lock)
+    MM->>NextId: Read current_id, calculate new_id = current_id + 1
+    MM->>NextId: Store new_id
+    MM->>-NextId: Release lock, returns model_id
+    MM->>+ModelsMap: write().await (acquire lock)
+    MM->>ModelsMap: insert(model_id, model_arc)
+    MM->>-ModelsMap: Release lock
+    MM-->>-CM: Returns Ok(model_id)
+```
+
+**Code Snippets (`src/model/model_manager.rs`):**
+
+*   **Constructor:**
+    ```rust
+    impl ModelManager {
+        pub fn new() -> Self {
+            Self {
+                models: RwLock::new(HashMap::new()),
+                next_id: RwLock::new(1), // Start IDs from 1
+            }
+        }
+    // ... other methods ...
+    }
+    ```
+    *Explanation:* Initializes the manager with an empty model map and sets the first available ID to 1.
+
+*   **`load_model` (Simplified):**
+    ```rust
+    use crate::hf_ops::download_model;
+    use crate::model::backends::onnx::bert_onnx::BertONNX;
+    use crate::model::model_utils::{Backend, ONNXModel, ModelTrait}; // ModelTrait likely unused here
+
+    impl ModelManager {
+        pub async fn load_model(
+            &self,
+            model_path: String,
+            model_variant: String,
+            model_type: Backend,
+            token: Option<String>,
+        ) -> anyhow::Result<u32> {
+            // 1. Handle HF path vs local path
+            let (model_dir, model_file) = if model_path.starts_with("hf://") {
+                download_model(model_path.clone(), model_variant.clone(), token).await?
+            } else {
+                (model_path.clone(), model_variant.clone())
+            };
+
+            // 2. Instantiate the specific backend model
+            let model: Arc<RwLock<dyn ONNXModel>> = match model_type {
+                Backend::ONNX => Arc::new(RwLock::new(
+                    BertONNX::new(model_dir.as_str(), model_file.as_str()).await?
+                )),
+                // Add other backends here if needed
+            };
+
+            // 3. Get the next available ID safely
+            let model_id = {
+                let mut next_id_guard = self.next_id.write().await;
+                let id = *next_id_guard;
+                *next_id_guard += 1;
+                id
+            };
+
+            // 4. Store the model instance in the map safely
+            {
+                let mut models_guard = self.models.write().await;
+                models_guard.insert(model_id, model);
+            } // Write lock released
+
+            info!("Model loaded from {}", model_path.as_str());
+            Ok(model_id)
+        }
+    }
+    ```
+    *Explanation:* Shows the core steps: resolving the path (downloading if needed), instantiating the backend, getting a unique ID atomically, and storing the model instance in the shared map.
+
+*   **`predict_f32` (Example Delegation):**
+    ```rust
+    use ndarray::Array2;
+    use anyhow::Error;
+
+    impl ModelManager {
+        pub async fn predict_f32(
+            &self,
+            model_id: u32,
+            texts: Vec<&str>,
+        ) -> anyhow::Result<Arc<Array2<f32>>> {
+            // 1. Acquire read lock on the models map
+            let models_guard = self.models.read().await;
+
+            // 2. Look up the model Arc by ID
+            match models_guard.get(&model_id) {
+                Some(model_arc) => {
+                    // 3. Clone the Arc (cheap) and acquire read lock on the specific model
+                    let model_instance_guard = model_arc.read().await;
+                    // 4. Delegate to the model's implementation
+                    Ok(model_instance_guard.predict_f32(texts).await?)
+                } // model_instance_guard lock released
+                None => Err(Error::msg("Model not found")),
+            }
+        } // models_guard lock released
+        // ... predict_f16 is analogous ...
+    }
+    ```
+    *Explanation:* Illustrates the lookup-lock-delegate pattern for prediction methods, ensuring thread-safe access to the underlying model.
+
+## Conclusion
+
+The `ModelManager` plays a vital role in `letsearch` by abstracting and managing the complexity of embedding models. It handles loading models from local paths or Hugging Face, ensures efficient reuse through a Flyweight-like ID system, provides a unified prediction interface, and guarantees thread safety. This separation of concerns simplifies the [CollectionManager](collectionmanager.mdc) and `Collection` logic, making the system more modular and maintainable.
+
+In the next chapter, [Chapter 6: VectorIndex](vectorindex.mdc), we will explore the component responsible for storing and searching the vector embeddings generated using the models managed by `ModelManager`.
+
+
+---
+
+Generated by [Rules for AI](https://github.com/altaidevorg/rules-for-ai)

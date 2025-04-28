@@ -1,0 +1,320 @@
+---
+description: letsearch tutorial: CollectionManager manages multiple Collection instances, acting as a facade for creation, loading, and operations.
+globs: src/collection/collection_manager.rs
+alwaysApply: false
+---
+# Chapter 3: CollectionManager
+
+In [Chapter 2: Serve (Actix Web App)](serve__actix_web_app_.mdc), we saw how `letsearch` exposes its functionality via a REST API. Handlers in that web server need a way to interact with the underlying data collections. This chapter introduces the `CollectionManager`, the central component responsible for managing the lifecycle and operations of multiple `Collection` instances within `letsearch`.
+
+## Motivation
+
+Managing individual collections directly can become complex, especially when dealing with multiple collections simultaneously or coordinating dependencies like embedding models. The `CollectionManager` addresses this by implementing the **Facade pattern**. It provides a simplified, high-level interface to a more complex subsystem (the individual collections and the model loading mechanism). This simplifies the code in the CLI ([Chapter 1: Cli / Commands](cli___commands.mdc)) and the web server handlers, making it easier to:
+
+*   Create new collections with specific configurations.
+*   Load existing collections from disk.
+*   Access specific collections by name for operations.
+*   Ensure necessary embedding models are loaded via the [ModelManager](modelmanager.mdc) when a collection is created or loaded.
+*   Route operations like data import, embedding, and search to the correct underlying `Collection` instance.
+*   Manage concurrent access safely using locks.
+
+## Central Use Case: Indexing Workflow via Manager
+
+Consider the `letsearch index` command discussed in Chapter 1. The user provides a collection name, data files, model details, and columns to index. The `main.rs` logic doesn't interact directly with a `Collection` object; instead, it uses the `CollectionManager` to orchestrate the entire process:
+
+```rust
+// Simplified from src/main.rs
+async fn handle_index_command(
+    // ... args like files, collection_name, model, index_columns, overwrite ...
+    hf_token: Option<String>
+) -> anyhow::Result<()> {
+    // 1. Instantiate the Manager
+    let collection_manager = CollectionManager::new(hf_token);
+
+    // 2. Define Collection Configuration
+    let mut config = CollectionConfig::default();
+    config.name = collection_name.to_string();
+    config.model_name = model.to_string();
+    // ... set other config fields ...
+    config.index_columns = index_columns.to_vec();
+
+    // 3. Create (or overwrite) the Collection via the Manager
+    // This also triggers loading the required embedding model.
+    collection_manager.create_collection(config, overwrite).await?;
+    info!("Collection '{}' created/ready", collection_name);
+
+    // 4. Import Data via the Manager
+    if files.ends_with(".jsonl") {
+        collection_manager.import_jsonl(&collection_name, files).await?;
+    } else if files.ends_with(".parquet") {
+        collection_manager.import_parquet(&collection_name, files).await?;
+    }
+    info!("Data imported into '{}'", collection_name);
+
+    // 5. Embed specified columns via the Manager
+    for column_name in &index_columns {
+        collection_manager.embed_column(&collection_name, column_name, batch_size).await?;
+        info!("Column '{}' embedded and indexed", column_name);
+    }
+
+    info!("Indexing complete for collection '{}'", collection_name);
+    Ok(())
+}
+```
+
+This example demonstrates how the `CollectionManager` acts as the single point of interaction for the CLI, hiding the complexity of collection instantiation, model loading, data handling, and embedding.
+
+## Core Concepts
+
+1.  **Facade Pattern:** The `CollectionManager` provides a unified and simplified interface (`create_collection`, `load_collection`, `import_jsonl`, `embed_column`, `search`, etc.) over the potentially complex interactions between `Collection` instances, the `ModelManager`, and file system operations.
+
+2.  **Collection Registry:** At its heart, the manager holds a map of all currently loaded collections. This map is designed for thread safety:
+    *   `HashMap<String, Arc<RwLock<Collection>>>`: Maps collection names (String) to `Collection` instances.
+    *   `Arc`: (Atomic Reference Counting) Allows multiple parts of the application (e.g., different web server requests) to share ownership of the same `Collection` instance without needing to clone the entire collection data.
+    *   `tokio::sync::RwLock`: Provides asynchronous read-write locking. Multiple tasks can read the `Collection` state concurrently (e.g., multiple simultaneous search requests), but writing (e.g., importing data, embedding) requires exclusive access, preventing data races. The outer `RwLock` on the `HashMap` itself protects the map structure during additions or removals of collections.
+
+    ```rust
+    // src/collection/collection_manager.rs
+    pub struct CollectionManager {
+        collections: RwLock<HashMap<String, Arc<RwLock<Collection>>>>,
+        // ... other fields ...
+    }
+    ```
+    *Explanation:* This structure ensures that the registry of collections can be safely accessed and modified from concurrent async tasks, which is essential for the web server.
+
+3.  **Model Coordination:** Collections require specific embedding models. When `create_collection` or `load_collection` is called, the `CollectionManager`:
+    *   Inspects the `CollectionConfig` (for new collections) or the loaded `Collection`'s state to determine the required model (name and variant).
+    *   Checks its internal `model_lookup: RwLock<HashMap<(String, String), u32>>` to see if this model (identified by name and variant tuple) has already been loaded by the [ModelManager](modelmanager.mdc).
+    *   If the model isn't loaded, it instructs the `ModelManager` (via `model_manager.load_model(...)`) to load it.
+    *   Stores the `model_id` returned by `ModelManager` in its `model_lookup` map for future use (e.g., during `embed_column` or `search`). This avoids redundant loading and provides efficient access.
+
+    ```rust
+    // Simplified logic within create_collection/load_collection
+    async fn ensure_model_loaded(&self, collection: &Arc<RwLock<Collection>>) -> anyhow::Result<()> {
+        let requested_models = collection.read().await.requested_models().await; // [(name, variant)]
+        if !requested_models.is_empty() {
+            let manager_guard = self.model_manager.write().await; // Lock ModelManager
+            let mut lookup_guard = self.model_lookup.write().await; // Lock local lookup
+            for model_key in requested_models {
+                if !lookup_guard.contains_key(&model_key) {
+                    let (model_path, model_variant) = model_key.clone();
+                    // Ask ModelManager to load
+                    let model_id = manager_guard.load_model(
+                        model_path, model_variant, Backend::ONNX, self.token.clone()
+                    ).await?;
+                    // Store the ID locally
+                    lookup_guard.insert(model_key, model_id);
+                }
+            }
+        }
+        Ok(())
+    }
+    ```
+    *Explanation:* This coordination ensures that models are loaded on demand when a collection requiring them is initialized, linking the collection lifecycle to the model lifecycle.
+
+4.  **Operation Routing:** Methods like `import_jsonl`, `embed_column`, and `search` take a `collection_name` as an argument. The `CollectionManager` performs these steps:
+    *   Acquires a read lock on the `collections` map.
+    *   Looks up the `Arc<RwLock<Collection>>` associated with the provided `collection_name`.
+    *   If found, it clones the `Arc` (cheap operation, increments reference count).
+    *   Releases the read lock on the `collections` map.
+    *   Acquires the appropriate lock (read for `search`, write for `import_jsonl`/`embed_column`) on the *specific collection's* `RwLock`.
+    *   Calls the corresponding method on the underlying `Collection` instance, potentially passing necessary context like the `ModelManager` reference or the `model_id`.
+    *   Handles potential errors (e.g., collection not found).
+
+    ```rust
+    // Simplified src/collection/collection_manager.rs - search method
+    pub async fn search(
+        &self,
+        collection_name: String,
+        column_name: String,
+        query: String,
+        limit: u32,
+    ) -> anyhow::Result<Vec<SearchResult>> {
+        // 1. Look up Collection Arc
+        let collection_arc = { // Scope for collections read lock
+            let collections_guard = self.collections.read().await;
+            collections_guard.get(collection_name.as_str()).cloned()
+                .ok_or_else(|| anyhow::anyhow!("Collection '{}' not found", collection_name))?
+        }; // collections read lock released here
+
+        // 2. Look up Model ID
+        let model_id = { // Scope for model_lookup read lock
+            let config = collection_arc.read().await.config();
+            let model_key = (config.model_name, config.model_variant);
+            self.model_lookup.read().await.get(&model_key).copied()
+                .ok_or_else(|| anyhow::anyhow!("Model '{:?}' not loaded", model_key))?
+        }; // model_lookup read lock released here
+
+        // 3. Acquire read lock on the specific Collection and delegate
+        let results = collection_arc.read().await.search(
+            column_name,
+            query,
+            limit,
+            self.model_manager.clone(), // Pass Arc<RwLock<ModelManager>>
+            model_id,
+        ).await?;
+
+        Ok(results)
+    }
+    ```
+    *Explanation:* This demonstrates the routing mechanism: find the target collection, gather necessary context (like `model_id`), acquire the correct lock on the target, and delegate the actual work.
+
+## Internal Implementation
+
+Let's trace the flow when `create_collection` is called, as seen in the central use case.
+
+**High-Level Flow (`create_collection`):**
+
+1.  **Input:** `CollectionConfig` (containing name, model info, etc.), `overwrite` flag.
+2.  **Action:**
+    a.  Instantiate a new `Collection` using `Collection::new(config, overwrite)`. This might involve creating directories on disk.
+    b.  Wrap the new `Collection` in `Arc::new(RwLock::new(...))`.
+    c.  Call the internal `ensure_model_loaded` helper (described above) to:
+        i.  Read the required models from the new collection's config.
+        ii. Acquire write locks on `model_manager` and `model_lookup`.
+        iii. For each required model, if not already in `model_lookup`:
+            *   Call `model_manager.load_model(...)`.
+            *   Store the returned `model_id` in `model_lookup`.
+        iv. Release locks.
+    d.  Acquire a write lock on the main `collections` HashMap.
+    e.  Insert the new `Arc<RwLock<Collection>>` into the map with the collection name as the key.
+    f.  Release the write lock on the `collections` map.
+3.  **Output:** `Ok(())` if successful, or an `Err` if collection creation, model loading, or locking fails.
+
+**Sequence Diagram (`create_collection`):**
+
+```mermaid
+sequenceDiagram
+    participant Client as CLI/User
+    participant CM as CollectionManager
+    participant CollectionType as Collection::new()
+    participant MM as ModelManager
+    participant ML as model_lookup (HashMap)
+    participant CollectionsMap as collections (HashMap)
+
+    Client->>+CM: create_collection(config, overwrite)
+    CM->>+CollectionType: new(config, overwrite)
+    CollectionType-->>-CM: Returns Ok(collection) or Err
+    CM->>CM: Wrap collection in Arc<RwLock<Collection>>
+    CM->>+CM: ensure_model_loaded(collection_arc)
+    CM->>collection_arc: read().await.requested_models()
+    collection_arc-->>CM: Returns [(model_name, variant)]
+    CM->>+MM: write().await (acquire lock)
+    CM->>+ML: write().await (acquire lock)
+    alt Model not in ML
+        CM->>MM: load_model(name, variant, ONNX, token)
+        MM-->>CM: Returns Ok(model_id) or Err
+        CM->>ML: insert((name, variant), model_id)
+    end
+    CM->>-ML: Release lock
+    CM->>-MM: Release lock
+    CM-->>-CM: Model loading complete
+    CM->>+CollectionsMap: write().await (acquire lock)
+    CM->>CollectionsMap: insert(config.name, collection_arc)
+    CM->>-CollectionsMap: Release lock
+    CM-->>-Client: Returns Ok(()) or Err
+```
+
+**Code Snippets (`src/collection/collection_manager.rs`):**
+
+*   **Structure Definition:**
+    ```rust
+    use crate::collection::collection_type::Collection;
+    use crate::model::model_manager::ModelManager;
+    use crate::model::model_utils::Backend;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    use super::collection_utils::{CollectionConfig, SearchResult};
+
+    pub struct CollectionManager {
+        // Registry of loaded collections
+        collections: RwLock<HashMap<String, Arc<RwLock<Collection>>>>,
+        // Shared access to the model manager
+        model_manager: Arc<RwLock<ModelManager>>,
+        // Cache for loaded model IDs (Model Name, Variant) -> Model ID
+        model_lookup: RwLock<HashMap<(String, String), u32>>,
+        // Optional Hugging Face token
+        token: Option<String>,
+    }
+    ```
+    *Explanation:* Defines the core fields holding the state: the collection registry, the model manager instance, the model lookup cache, and the HF token.
+
+*   **Constructor:**
+    ```rust
+    impl CollectionManager {
+        pub fn new(token: Option<String>) -> Self {
+            CollectionManager {
+                collections: RwLock::new(HashMap::new()),
+                model_manager: Arc::new(RwLock::new(ModelManager::new())),
+                model_lookup: RwLock::new(HashMap::new()),
+                token: token,
+            }
+        }
+    // ... other methods ...
+    }
+    ```
+    *Explanation:* Initializes the manager with empty maps and a new `ModelManager` instance, wrapped appropriately for shared access.
+
+*   **`create_collection` (Simplified):**
+    ```rust
+    pub async fn create_collection(
+        &self,
+        config: CollectionConfig,
+        overwrite: bool,
+    ) -> anyhow::Result<()> {
+        let name = config.name.clone();
+        // 1. Create the underlying Collection instance
+        let collection_arc = Arc::new(RwLock::new(Collection::new(config, overwrite).await?));
+
+        // 2. Ensure associated model is loaded
+        self.ensure_model_loaded(&collection_arc).await?; // Simplified helper
+
+        // 3. Add to the registry
+        let mut collections_map_guard = self.collections.write().await;
+        collections_map_guard.insert(name.clone(), collection_arc.clone());
+
+        Ok(())
+    }
+
+    // Internal helper (conceptual)
+    async fn ensure_model_loaded(&self, collection_arc: &Arc<RwLock<Collection>>) -> anyhow::Result<()> {
+        // ... logic as described in Core Concepts/Model Coordination ...
+        // ... involves locking model_manager and model_lookup ...
+        // ... calls model_manager.load_model(...) if needed ...
+        Ok(())
+    }
+    ```
+    *Explanation:* Shows the primary steps: create `Collection`, ensure model via helper, insert into the locked map.
+
+*   **`import_jsonl` (Simplified):**
+    ```rust
+    pub async fn import_jsonl(
+        &self,
+        collection_name: &str,
+        jsonl_path: &str,
+    ) -> anyhow::Result<()> {
+        // 1. Find the collection Arc (read lock on map)
+        let collection_arc = {
+            let collections_guard = self.collections.read().await;
+            collections_guard.get(collection_name).cloned()
+                .ok_or_else(|| /* ... error ... */)?
+        }; // map read lock released
+
+        // 2. Delegate to the collection (write lock on collection)
+        let collection_guard = collection_arc.write().await;
+        collection_guard.import_jsonl(jsonl_path).await
+    }
+    ```
+    *Explanation:* Highlights the pattern: look up the `Arc`, release the map lock, acquire a write lock on the specific collection, and delegate.
+
+## Conclusion
+
+The `CollectionManager` serves as a crucial abstraction layer in `letsearch`. By acting as a Facade, it simplifies interactions with collections for both the CLI and the web server. It manages a thread-safe registry of `Collection` instances, coordinates the loading of required embedding models via the `ModelManager`, and routes operations like data import and search to the appropriate collection. This centralized management makes the overall system more robust and easier to extend.
+
+In the next chapter, [Chapter 4: Collection](collection.mdc), we will dive into the `Collection` struct itself, exploring how individual collections store their data, manage their vector indices, and perform the operations delegated by the `CollectionManager`.
+
+
+---
+
+Generated by [Rules for AI](https://github.com/altaidevorg/rules-for-ai)

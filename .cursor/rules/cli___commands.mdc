@@ -1,0 +1,266 @@
+---
+description: Details the letsearch command-line interface (CLI) built with clap, defining commands and parsing arguments.
+globs: 
+alwaysApply: false
+---
+# Chapter 1: Cli / Commands
+
+Welcome to the `letsearch` tutorial! This first chapter focuses on the Command-Line Interface (CLI), which serves as the primary entry point for users interacting with the application.
+
+## Motivation
+
+A robust CLI is essential for any command-line application. It provides a structured way for users to specify the desired operation (like indexing data or starting a search server) and provide necessary parameters (like file paths, model names, or server ports). `letsearch` uses the popular `clap` crate in Rust to define and parse these commands and arguments efficiently and reliably, offering features like automatic help message generation, argument validation, and default values.
+
+## Core Concepts: `clap` Integration
+
+The CLI definition resides primarily in `src/main.rs`. The core components are:
+
+1.  **`Cli` Struct:** The top-level structure representing the entire `letsearch` application command. It uses `clap::Parser` to enable automatic argument parsing.
+2.  **`Commands` Enum:** Defines the available subcommands (`Index`, `Serve`, `ListModels`). Each variant holds the specific arguments and options required for that operation.
+3.  **`clap` Attributes:** Special attributes (`#[derive(Parser)]`, `#[command(...)]`, `#[arg(...)]`, `#[derive(Subcommand)]`) are used to declaratively define the CLI structure, arguments, options, help messages, default values, and validation rules.
+
+**Use Case:** Indexing Documents
+
+A central use case is indexing documents into a collection. A user might invoke `letsearch` like this:
+
+```bash
+letsearch index --files "data/*.jsonl" --collection-name "my_docs" --model "hf://sentence-transformers/all-MiniLM-L6-v2" --index-columns "text" --overwrite
+```
+
+This command instructs `letsearch` to:
+*   Execute the `Index` subcommand.
+*   Process all `.jsonl` files in the `data/` directory.
+*   Create or overwrite a collection named `my_docs`.
+*   Use the specified Hugging Face model for embedding.
+*   Index the content of the `text` column.
+*   Overwrite the collection if it already exists.
+
+## Defining the CLI Structure
+
+Let's examine how `clap` is used to define this structure.
+
+**1. The Main Application (`Cli` struct):**
+
+```rust
+// src/main.rs
+use clap::{Parser, Subcommand};
+
+/// CLI application for indexing and searching documents
+#[derive(Parser, Debug)]
+#[command(
+    name = "letsearch",
+    version = "0.1.14", // Example version
+    author = "yusufsarigoz@gmail.com",
+    about = "Single binary to embed, index, serve and search your documents",
+    subcommand_required = true, // A subcommand must be provided
+    arg_required_else_help = true // Show help if no args/subcommand given
+)]
+pub struct Cli {
+    #[command(subcommand)] // Indicates this field holds the chosen subcommand
+    command: Commands,
+}
+```
+
+*   `#[derive(Parser)]`: Enables `clap`'s parsing capabilities for this struct.
+*   `#[command(...)]`: Provides metadata for the main command (name, version, author, description).
+*   `subcommand_required = true`: Ensures the user must specify one of the defined subcommands (`index`, `serve`, or `list-models`).
+*   `arg_required_else_help = true`: If the user runs `letsearch` without any arguments, the help message is displayed instead of an error.
+*   `command: Commands`: This field will hold an instance of the `Commands` enum corresponding to the subcommand chosen by the user.
+
+**2. Defining Subcommands (`Commands` enum):**
+
+```rust
+// src/main.rs
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Index documents
+    Index { /* ... arguments ... */ },
+
+    /// serve a collection for search over web API
+    Serve { /* ... arguments ... */ },
+
+    /// list models compatible with letsearch
+    ListModels { /* ... arguments ... */ },
+}
+```
+
+*   `#[derive(Subcommand)]`: Marks this enum as representing the available subcommands.
+*   Each variant (`Index`, `Serve`, `ListModels`) corresponds to a subcommand users can type (e.g., `letsearch index ...`).
+*   The doc comments (`/// ...`) automatically become the help descriptions for each subcommand.
+
+**3. Defining Arguments and Options (Inside `Commands` variants):**
+
+Let's look at the `Index` subcommand's arguments:
+
+```rust
+// src/main.rs (Inside Commands::Index)
+#[derive(Subcommand, Debug)]
+pub enum Commands {
+    /// Index documents
+    Index {
+        /// Path to file(s) to index.
+        /// You can provide local or hf://datasets paths.
+        /// It might be a regular path or a glob pattern.
+        #[arg(required = true)] // This argument is mandatory
+        files: String,
+
+        /// name of the collection to be created
+        #[arg(short, long, required = true)] // -c or --collection-name, mandatory
+        collection_name: String,
+
+        /// Model to create embeddings.
+        #[arg(short, long, default_value = "hf://mys/minilm")] // -m or --model, has default
+        model: String,
+
+        // ... other args like variant, hf_token, batch_size ...
+
+        /// columns to embed and index for vector search.
+        #[arg(short, long, action = clap::ArgAction::Append)] // -i or --index-columns, repeatable
+        index_columns: Vec<String>,
+
+        /// remove and re-create collection if it exists
+        #[arg(long, action=clap::ArgAction::SetTrue)] // --overwrite, a boolean flag
+        overwrite: bool,
+    },
+    // ... Serve, ListModels ...
+}
+```
+
+*   `#[arg(...)]`: Used to configure each field as a command-line argument or option.
+*   `required = true`: Makes the argument mandatory.
+*   `short`: Defines a short flag (e.g., `-c`).
+*   `long`: Defines a long flag (e.g., `--collection-name`).
+*   `default_value = "..."`: Provides a default value if the user doesn't specify the option.
+*   `action = clap::ArgAction::Append`: Allows the option to be specified multiple times (e.g., `-i col1 -i col2`), collecting values into a `Vec`.
+*   `action = clap::ArgAction::SetTrue`: Defines a boolean flag (present means `true`, absent means `false`).
+*   Doc comments on fields provide help text for individual arguments/options.
+
+## Parsing and Execution Flow
+
+The `main` function orchestrates the parsing and dispatching of commands.
+
+**1. Parsing:**
+
+```rust
+// src/main.rs
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // ... logger setup ...
+
+    let cli = Cli::parse(); // <--- Parsing happens here
+
+    // ... rest of the function ...
+    Ok(())
+}
+```
+
+*   `Cli::parse()`: This is the core `clap` function call. It reads the command-line arguments provided by the user, validates them against the `Cli` struct and `Commands` enum definitions, and populates an instance of `Cli` with the parsed values. If validation fails (e.g., missing required argument), `clap` automatically prints an error message and exits.
+
+**2. Dispatching:**
+
+After successful parsing, the `main` function uses a `match` statement to determine which subcommand was executed and extracts its arguments.
+
+```rust
+// src/main.rs
+match &cli.command {
+    Commands::Index {
+        files,
+        collection_name,
+        model,
+        variant,
+        hf_token,
+        batch_size,
+        index_columns,
+        overwrite,
+    } => {
+        // --- Logic for the Index command ---
+        info!("Handling 'index' command...");
+        // 1. Create CollectionConfig
+        let mut config = CollectionConfig::default();
+        // ... populate config from parsed args ...
+
+        // 2. Handle HF Token (CLI arg or environment variable)
+        let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
+
+        // 3. Instantiate CollectionManager
+        let collection_manager = CollectionManager::new(token); // See [CollectionManager](collectionmanager.mdc)
+
+        // 4. Call CollectionManager methods
+        collection_manager.create_collection(config, *overwrite).await?;
+        // ... import data (JSONL/Parquet) ...
+        // ... embed columns ...
+        info!("Indexing complete for collection '{}'", collection_name);
+    }
+
+    Commands::Serve {
+        collection_name,
+        host,
+        port,
+        hf_token,
+    } => {
+        // --- Logic for the Serve command ---
+        info!("Handling 'serve' command...");
+        let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
+        // Call the server function
+        run_server(host.clone(), *port, collection_name.clone(), token).await?; // See [Serve (Actix Web App)](serve__actix_web_app_.mdc)
+    }
+
+    Commands::ListModels { hf_token } => {
+        // --- Logic for the ListModels command ---
+        info!("Handling 'list-models' command...");
+        let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
+        // Call the Hugging Face operations function
+        list_models(token).await?; // See [hf_ops](hf_ops.mdc)
+    }
+}
+```
+
+*   The `match` statement branches based on the `command` field of the parsed `cli` struct.
+*   Inside each branch, the specific arguments defined for that subcommand variant are destructured (e.g., `files`, `collection_name`, etc.).
+*   These extracted values are then used to configure and call the appropriate application logic:
+    *   `Index`: Interacts heavily with the [CollectionManager](collectionmanager.mdc) to create collections, import data, and trigger embedding/indexing.
+    *   `Serve`: Calls `run_server` (defined in `src/serve.rs`) to start the Actix Web server, covered in the [Serve (Actix Web App)](serve__actix_web_app_.mdc) chapter.
+    *   `ListModels`: Calls `list_models` from the [hf_ops](hf_ops.mdc) module to interact with the Hugging Face Hub.
+*   Notice the pattern for handling the optional `hf_token`: it prioritizes the command-line argument (`--hf-token`) and falls back to the `HF_TOKEN` environment variable if the argument is not provided.
+
+## Internal Flow Diagram
+
+Here's a simplified sequence diagram illustrating the flow when a user runs the `index` command:
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant OS as Operating System
+    participant LetSearchApp as letsearch (main.rs)
+    participant Clap
+    participant CollectionMgr as CollectionManager
+
+    User->>OS: Executes `letsearch index --files ... --collection-name my_docs ...`
+    OS->>LetSearchApp: Starts process with arguments
+    LetSearchApp->>Clap: Calls `Cli::parse()`
+    Clap->>LetSearchApp: Returns populated `Cli` struct (with `Commands::Index` variant)
+    LetSearchApp->>LetSearchApp: Enters `match &cli.command` block (Index branch)
+    LetSearchApp->>CollectionMgr: `new(token)`
+    CollectionMgr-->>LetSearchApp: Returns CollectionManager instance
+    LetSearchApp->>CollectionMgr: `create_collection(config, overwrite)`
+    CollectionMgr->>CollectionMgr: Performs collection creation logic
+    CollectionMgr-->>LetSearchApp: Returns Result::Ok(())
+    LetSearchApp->>CollectionMgr: `import_jsonl("my_docs", files)` / `import_parquet(...)`
+    CollectionMgr->>CollectionMgr: Reads data, stores it
+    CollectionMgr-->>LetSearchApp: Returns Result::Ok(())
+    LetSearchApp->>CollectionMgr: `embed_column("my_docs", column, batch_size)`
+    CollectionMgr->>CollectionMgr: Processes embedding and indexing
+    CollectionMgr-->>LetSearchApp: Returns Result::Ok(())
+    LetSearchApp->>OS: Exits successfully
+```
+
+## Conclusion
+
+This chapter detailed how `letsearch` uses the `clap` crate to define a structured and user-friendly command-line interface. You learned about the `Cli` struct, the `Commands` enum, and how `clap` attributes are used to define subcommands, arguments, options, and help messages. We also saw how the `main` function parses these arguments using `Cli::parse()` and dispatches control to the relevant application logic based on the chosen subcommand. This CLI layer acts as the crucial entry point, translating user intent into actions within the `letsearch` application.
+
+The next chapter, [Serve (Actix Web App)](serve__actix_web_app_.mdc), will dive into the implementation of the `Serve` command, exploring how the Actix Web framework is used to expose search functionality over an HTTP API.
+
+
+---
+
+Generated by [Rules for AI](https://github.com/altaidevorg/rules-for-ai)

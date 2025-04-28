@@ -1,0 +1,288 @@
+---
+description: Details the letsearch Collection struct, managing a single dataset's DuckDB storage, configuration, and associated VectorIndex instances.
+globs: src/collection/collection_type.rs
+alwaysApply: false
+---
+# Chapter 4: Collection
+
+In the previous chapter, [Chapter 3: CollectionManager](collectionmanager.mdc), we explored how `letsearch` manages multiple collections through a unified facade. Now, we delve deeper into the core component managed by the `CollectionManager`: the `Collection` struct itself. This chapter details how a `Collection` instance encapsulates the data, indices, and configuration for a single dataset or corpus.
+
+## Motivation
+
+While the `CollectionManager` provides a high-level interface, the actual work of storing data, managing vector indices, and performing operations like import, embedding, and search happens within a `Collection` instance. This struct serves as the central hub for a specific dataset, encapsulating:
+
+1.  **Primary Data Storage:** Using DuckDB for efficient storage and querying of structured data.
+2.  **Vector Indices:** Managing associated [VectorIndex](vectorindex.mdc) instances for similarity search on specific columns.
+3.  **Configuration:** Holding the collection-specific settings defined in `CollectionConfig`.
+4.  **Operational Logic:** Containing the methods to import data, trigger embedding processes, and retrieve/search data.
+
+This encapsulation ensures that all aspects related to a single dataset are grouped logically, making the system modular and easier to manage.
+
+## Central Use Case: Embedding a Column
+
+Imagine the `CollectionManager` receives a request (perhaps originating from the `letsearch index` command) to embed the `text` column of a collection named `my_docs`. The `CollectionManager` would:
+
+1.  Locate the `Arc<RwLock<Collection>>` for `my_docs`.
+2.  Acquire a write lock on that specific `Collection` instance.
+3.  Look up the necessary `model_id` for the collection's configured embedding model.
+4.  Call the `embed_column` method on the locked `Collection` instance, passing the column name (`"text"`), batch size, a reference to the [ModelManager](modelmanager.mdc), and the `model_id`.
+
+The `Collection` instance would then handle the entire embedding and indexing process for the specified column.
+
+## Core Concepts
+
+1.  **Data Storage (DuckDB):**
+    *   Each `Collection` maintains a connection to its own DuckDB database file (e.g., `~/.letsearch/collections/my_docs/data.db`).
+    *   The connection is wrapped in `Arc<RwLock<Connection>>` to allow safe, concurrent access from asynchronous tasks (multiple reads or one write).
+    *   Data is typically loaded into a DuckDB table named after the collection (e.g., `my_docs`). DuckDB's ability to directly query file formats like JSONL and Parquet (`read_json_auto`, `read_parquet`) simplifies the import process.
+    *   Schema is often inferred automatically by DuckDB during import.
+
+    ```rust
+    // src/collection/collection_type.rs (Simplified Struct)
+    use duckdb::Connection;
+    use std::sync::Arc;
+    use tokio::sync::RwLock;
+    // ... other imports ...
+
+    pub struct Collection {
+        config: CollectionConfig,
+        // Thread-safe access to the DuckDB connection
+        conn: Arc<RwLock<Connection>>,
+        // Map of column names to their vector indices
+        vector_index: RwLock<HashMap<String, Arc<RwLock<VectorIndex>>>>,
+    }
+    ```
+    *Explanation:* The `conn` field holds the shared, lock-protected DuckDB connection essential for all data operations.
+
+2.  **Vector Indices (`VectorIndex`):**
+    *   A `Collection` manages a `HashMap` where keys are column names (strings) and values are `Arc<RwLock<VectorIndex>>`. This map itself is protected by a `RwLock` for safe concurrent access.
+    *   Each `VectorIndex` (detailed in [Chapter 6: VectorIndex](vectorindex.mdc)) stores the vector embeddings for a *single* column and provides similarity search capabilities for that column.
+    *   Indices are typically created on demand when `embed_column` is first called for a specific column. The necessary configuration (vector dimension, metric, data type) is obtained from the associated [ModelManager](modelmanager.mdc) during this process.
+    *   Indices are persisted to disk within the collection's directory (e.g., `~/.letsearch/collections/my_docs/index/text.usearch`).
+
+    ```rust
+    // src/collection/collection_type.rs (Struct field)
+    // ...
+    vector_index: RwLock<HashMap<String, Arc<RwLock<VectorIndex>>>>,
+    // ...
+    ```
+    *Explanation:* This field maps indexed column names to their respective thread-safe vector index instances.
+
+3.  **Configuration (`CollectionConfig`):**
+    *   Each `Collection` holds an instance of `CollectionConfig` (defined in `src/collection/collection_utils.rs`).
+    *   This struct stores metadata like the collection name, the list of columns intended for indexing (`index_columns`), the associated embedding model (`model_name`, `model_variant`), paths to the database (`db_path`) and index directory (`index_dir`) relative to the collection's root.
+    *   This configuration is loaded from/saved to `config.json` within the collection's directory.
+
+4.  **Unique Identifier (`_key`):**
+    *   To link rows in the DuckDB table with their corresponding vectors in the `VectorIndex`, `letsearch` automatically adds a unique `_key` column (unsigned 64-bit integer) to the DuckDB table during data import if it doesn't already exist.
+    *   A DuckDB `SEQUENCE` (`keys_seq`) is used to generate these unique, auto-incrementing keys.
+    *   The `VectorIndex` stores vectors associated with these `_key` values. When a similarity search returns keys, they are used to look up the original data in the DuckDB table.
+
+    ```rust
+    // src/collection/collection_type.rs - add_keys_to_db (Simplified logic)
+    async fn add_keys_to_db(&self, tx: &duckdb::Transaction<'_>) -> anyhow::Result<()> {
+        // Check if '_key' column exists using information_schema
+        let exists: bool = /* ... SQL query to check existence ... */ ;
+
+        if !exists {
+            // Add the sequence and the _key column with a default value
+            tx.execute_batch(
+                format!(
+                    r"CREATE SEQUENCE keys_seq;
+    ALTER TABLE {} ADD COLUMN _key UBIGINT DEFAULT NEXTVAL('keys_seq');",
+                    self.config.name,
+                )
+                .as_str(),
+            )?;
+        }
+        Ok(())
+    }
+    ```
+    *Explanation:* This internal helper ensures every row gets a unique `_key` used for linking data and vectors.
+
+## Using `Collection`
+
+Operations on a `Collection` are typically initiated by the [CollectionManager](collectionmanager.mdc).
+
+1.  **Instantiation:**
+    *   `Collection::new(config, overwrite)`: Creates a *new* collection. It sets up the directory structure (`~/.letsearch/collections/<name>/`), creates the DuckDB file, saves the `config.json`, and initializes empty structures. If `overwrite` is true and the directory exists, it's removed first.
+    *   `Collection::from(name)`: Loads an *existing* collection by reading its `config.json`, opening the DuckDB connection, and loading any persisted `VectorIndex` files found in the index directory.
+
+2.  **Data Import (`import_jsonl`, `import_parquet`):**
+    *   These methods take the path to the data file(s).
+    *   They acquire a write lock on the `conn` (DuckDB connection).
+    *   They execute a DuckDB transaction:
+        *   `CREATE TABLE <collection_name> AS SELECT * FROM read_json_auto('<path>')` (or `read_parquet`). This efficiently loads data into the main table.
+        *   Call `add_keys_to_db` within the same transaction to ensure the `_key` column is present.
+        *   Commit the transaction.
+
+    ```rust
+    // src/collection/collection_type.rs (Simplified import_jsonl)
+    pub async fn import_jsonl(&self, jsonl_path: &str) -> anyhow::Result<()> {
+        let start = Instant::now();
+        { // Scope for write lock on connection
+            let conn = self.conn.clone();
+            let mut conn_guard = conn.write().await;
+            let tx = conn_guard.transaction()?; // Start transaction
+
+            // Create table from JSONL file
+            tx.execute_batch(
+                format!(
+                    "CREATE TABLE {} AS SELECT * FROM read_json_auto('{}');",
+                    &self.config.name, jsonl_path
+                ).as_str(),
+            )?;
+            // Ensure _key column exists
+            self.add_keys_to_db(&tx).await?;
+
+            tx.commit()?; // Commit transaction
+        } // Write lock released
+        info!("Imported from {} in {:?}", jsonl_path, start.elapsed());
+        Ok(())
+    }
+    ```
+    *Explanation:* Demonstrates transactional data loading from a file and the inclusion of the `_key` column.
+
+3.  **Embedding & Indexing (`embed_column`):**
+    *   This method is called by the `CollectionManager` after ensuring the required model is loaded.
+    *   It receives the `column_name`, `batch_size`, an `Arc<RwLock<ModelManager>>`, and the `model_id`.
+    *   **Steps:**
+        *   Calculates the total number of rows and batches needed.
+        *   Acquires a write lock on the `vector_index` map. If no index exists for `column_name`, it creates a new `VectorIndex`, configuring its dimensions and data type based on the model's output (obtained from `ModelManager`), and adds it to the map (wrapped in `Arc<RwLock<...>>`). Releases the map lock.
+        *   Iterates through the data in batches:
+            *   Calls `get_column_and_keys` to fetch a batch of text data and corresponding `_key` values from DuckDB.
+            *   Calls `model_manager.read().await.predict(...)` to get the embeddings for the text batch.
+            *   Acquires a write lock on the *specific* `VectorIndex` for the column.
+            *   Calls `vector_index.add(...)` to insert the keys and their embeddings into the index. Releases the index lock.
+        *   After processing all batches, acquires a read lock on the specific `VectorIndex` and calls `save()` to persist it to disk.
+
+    ```rust
+    // src/collection/collection_type.rs (Simplified get_column_and_keys)
+    pub async fn get_column_and_keys(
+        &self, column_name: &str, limit: u64, offset: u64
+    ) -> anyhow::Result<(Vec<String>, Vec<u64>)> {
+        let conn = self.conn.clone();
+        let conn_guard = conn.read().await; // Read lock on DB connection
+
+        // Select the text column and the _key column
+        let mut stmt = conn_guard.prepare(
+            format!(
+                "SELECT {}, _key FROM {} LIMIT {} OFFSET {};",
+                column_name, &self.config.name, limit, offset
+            ).as_str(),
+        )?;
+        // ... process Arrow RecordBatch to extract Vec<String> and Vec<u64> ...
+        Ok((/* values */ Vec::new(), /* keys */ Vec::new())) // Simplified return
+    }
+    ```
+    *Explanation:* Helper method to efficiently retrieve batches of data and their unique keys from DuckDB for processing.
+
+4.  **Search (`search`):**
+    *   Receives `column_name`, `query` text, `limit`, `Arc<RwLock<ModelManager>>`, and `model_id`.
+    *   **Steps:**
+        *   Uses the `ModelManager` to embed the input `query` text.
+        *   Acquires a read lock on the `vector_index` map to find the `Arc<RwLock<VectorIndex>>` for the target `column_name`. Releases map lock.
+        *   Acquires a read lock on the specific `VectorIndex`.
+        *   Calls `vector_index.search(...)` with the query embedding and `limit` to get a list of `SimilarityResult` (containing `key` and `score`). Releases index lock.
+        *   Extracts the `_key` values from the search results.
+        *   Calls `get_single_column` (similar to `get_column_and_keys` but only fetches the specified column) on DuckDB using the retrieved keys to get the original content associated with the top results.
+        *   Combines the original content, keys, and scores into `SearchResult` objects.
+
+    ```rust
+    // src/collection/collection_type.rs (Simplified search)
+    pub async fn search(
+        &self, column_name: String, query: String, limit: u32,
+        model_manager: Arc<RwLock<ModelManager>>, model_id: u32,
+    ) -> anyhow::Result<Vec<SearchResult>> {
+        // 1. Embed query
+        let query_embedding = model_manager.read().await.predict(model_id, vec![&query]).await?;
+
+        // 2. Find VectorIndex Arc
+        let index_arc = {
+            let indices_guard = self.vector_index.read().await;
+            indices_guard.get(&column_name).cloned()
+                .ok_or_else(|| anyhow::anyhow!("Index not found"))?
+        }; // Release map lock
+
+        // 3. Search in VectorIndex
+        let similarity_results = {
+            let index_guard = index_arc.read().await; // Lock specific index
+            index_guard.search(/* query_embedding details */, limit as usize).await?
+        }; // Release index lock
+
+        // 4. Get original content from DuckDB using keys from similarity_results
+        let keys: Vec<u64> = /* ... extract keys ... */ ;
+        let contents = self.get_single_column(&column_name, keys.len() as u64, 0, keys).await?;
+
+        // 5. Combine results
+        let search_results = /* ... zip contents, keys, scores ... */;
+        Ok(search_results)
+    }
+    ```
+    *Explanation:* Outlines the process of embedding the query, searching the relevant index, retrieving original data using keys, and formatting the final results.
+
+## Internal Implementation
+
+Let's trace the `embed_column` operation initiated by the `CollectionManager`.
+
+**Flow:**
+
+1.  **`CollectionManager`:** Acquires write lock on the target `Collection`. Calls `collection.embed_column(...)`.
+2.  **`Collection::embed_column`:**
+    a.  Queries DuckDB (`SELECT COUNT(...)`) for total rows. Calculates batches.
+    b.  Acquires write lock on `self.vector_index` map.
+    c.  Checks if an index for `column_name` exists.
+    d.  If not, calls `model_manager.read().await.output_dim/output_dtype()` to get model specifics. Creates a new `VectorIndex` instance, configures it (`.with_options()`), wraps it in `Arc<RwLock<...>>`, and inserts it into the map.
+    e.  Releases write lock on `self.vector_index` map.
+    f.  Starts loop (`for batch in 0..num_batches`).
+    g.  Calls `self.get_column_and_keys(...)` (acquires read lock on `self.conn`).
+    h.  Calls `model_manager.read().await.predict(...)` with the text batch.
+    i.  Retrieves the specific `Arc<RwLock<VectorIndex>>` for the column (cheap clone).
+    j.  Acquires write lock on *that specific* `VectorIndex`.
+    k.  Calls `vector_index.add(...)` with keys and embeddings.
+    l.  Releases write lock on the `VectorIndex`.
+    m.  (Loop continues)
+    n.  After loop, retrieves `Arc<RwLock<VectorIndex>>` again.
+    o.  Acquires read lock on the `VectorIndex`.
+    p.  Calls `vector_index.save()`.
+    q.  Releases read lock on `VectorIndex`.
+3.  **`CollectionManager`:** Releases write lock on the `Collection`.
+
+**Sequence Diagram (`embed_column`):**
+
+```mermaid
+sequenceDiagram
+    participant CM as CollectionManager
+    participant Col as Collection
+    participant MM as ModelManager
+    participant VI as VectorIndex
+    participant DB as DuckDB (conn)
+
+    CM->>+Col: embed_column(col, batch, mm_arc, model_id)
+    Col->>+DB: read().await.query("SELECT COUNT...")
+    DB-->>-Col: Row count
+    Col->>Col: Check/Create VectorIndex (acquire/release map lock)
+    Note over Col,MM: If creating VI, queries MM for dim/dtype
+    loop Batches
+        Col->>+DB: read().await.query("SELECT col, _key ...") (get_column_and_keys)
+        DB-->>-Col: Text batch + Keys
+        Col->>+MM: read().await.predict(model_id, text_batch)
+        MM-->>-Col: Embeddings batch
+        Col->>+VI: write().await.add(keys, embeddings)
+        VI-->>-Col: Ok
+    end
+    Col->>+VI: read().await.save()
+    VI-->>-Col: Ok
+    Col-->>-CM: Ok()
+```
+
+## Conclusion
+
+The `Collection` struct is the heart of data management within `letsearch`. It effectively encapsulates a single dataset's structured data (via DuckDB), its vector representations ([VectorIndex](vectorindex.mdc)), and its configuration (`CollectionConfig`). By providing methods for data import, embedding, indexing, and searching, while managing concurrent access via locks, it serves as the fundamental building block upon which the [CollectionManager](collectionmanager.mdc) orchestrates higher-level operations. Understanding the `Collection` is key to understanding how data flows through `letsearch` during indexing and search.
+
+The next chapter, [Chapter 5: ModelManager](modelmanager.mdc), will explore how `letsearch` manages the loading and execution of the embedding models required by these Collections.
+
+
+---
+
+Generated by [Rules for AI](https://github.com/altaidevorg/rules-for-ai)

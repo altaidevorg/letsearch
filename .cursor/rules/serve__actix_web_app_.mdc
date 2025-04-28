@@ -1,0 +1,290 @@
+---
+description: Details the letsearch Actix Web server implementation, exposing a REST API for collection management and vector search.
+globs: src/serve.rs
+alwaysApply: false
+---
+# Chapter 2: Serve (Actix Web App)
+
+Following our exploration of the command-line interface in [Chapter 1: Cli / Commands](cli___commands.mdc), which allows users to index data and initiate the server, this chapter delves into the `serve` functionality itself. We'll examine how `letsearch` utilizes the Actix Web framework to create an asynchronous HTTP server, exposing a RESTful API for interacting with the indexed document collections.
+
+## Motivation
+
+While the CLI is suitable for one-off indexing tasks, accessing search capabilities often requires a persistent service that other applications or users can interact with over a network. A web server provides this interface. `letsearch` employs Actix Web, a powerful and high-performance web framework for Rust, to build this server component. It allows defining routes, handling HTTP requests efficiently, managing shared application state (like access to our document collections), and returning structured responses (JSON). This enables `letsearch` to function as a dedicated vector search microservice.
+
+## Central Use Case: Performing a Vector Search
+
+Imagine a user wants to find documents in the "my_docs" collection whose "text" content is semantically similar to the query "information retrieval techniques". Using a tool like `curl`, they would send an HTTP POST request to the running `letsearch` server:
+
+```bash
+curl -X POST http://127.0.0.1:7898/collections/my_docs/search \
+     -H "Content-Type: application/json" \
+     -d '{
+           "column_name": "text",
+           "query": "information retrieval techniques",
+           "limit": 5
+         }'
+```
+
+The server would then:
+1. Receive the request targeting the `search` endpoint for the `my_docs` collection.
+2. Parse the JSON payload containing the column to search (`text`), the query string, and the desired number of results (`limit`).
+3. Use the query string to generate a vector embedding.
+4. Perform a similarity search within the "text" column's index for the "my_docs" collection.
+5. Return the top 5 most similar documents as a JSON response.
+
+## Core Concepts
+
+Let's break down the key components involved in building the Actix Web server in `src/serve.rs`.
+
+1.  **Actix Web Framework:** The foundation. It provides the `HttpServer`, `App` structure, routing macros, request/response types, and middleware capabilities needed to build the web application. It operates asynchronously, making it efficient for I/O-bound tasks like network communication.
+
+2.  **Routing:** Defines how incoming HTTP requests (method + path) are mapped to specific Rust functions (handlers). `letsearch` uses `App::route()` with methods like `web::get()` and `web::post()`.
+    ```rust
+    // Example route definition within App::new() closure
+    .route("/", web::get().to(healthcheck)) // GET / maps to healthcheck function
+    .route(
+        "/collections/{collection_name}/search",
+        web::post().to(search), // POST /collections/{name}/search maps to search function
+    )
+    ```
+    Path parameters like `{collection_name}` are automatically extracted.
+
+3.  **Shared State (`web::Data` and `RwLock`):** The web server needs access to the loaded collection data. Since multiple requests might need this data concurrently, it's wrapped in shared state management structures.
+    *   `CollectionManager`: The central orchestrator for loading and interacting with collections (covered in detail in [CollectionManager](collectionmanager.mdc)).
+    *   `tokio::sync::RwLock`: Allows multiple concurrent reads *or* one exclusive write to the `CollectionManager`. This is crucial for allowing simultaneous search requests (reads) while ensuring safety if the manager needed mutation (though mutation isn't typical during serving).
+    *   `actix_web::web::Data`: An Actix helper type used to wrap shared application state (`RwLock<CollectionManager>`) and make it accessible within handlers.
+
+    ```rust
+    // In run_server function
+    let collection_manager = CollectionManager::new(token);
+    // ... load collection ...
+    let shared_manager = web::Data::new(RwLock::new(collection_manager)); // Wrap manager
+
+    // In HttpServer::new closure
+    App::new()
+        .app_data(shared_manager.clone()) // Register shared state with the App
+        // ... routes ...
+    ```
+
+4.  **Request Handling & Extraction:** Handler functions receive request details as arguments. Actix provides "extractors" to easily access parts of the request:
+    *   `web::Path<T>`: Extracts path parameters (e.g., `web::Path<String>` for `collection_name`).
+    *   `web::Json<T>`: Deserializes the request body as JSON into a specified struct (e.g., `web::Json<QueryRequest>`).
+    *   `web::Data<T>`: Accesses the shared application state.
+
+    ```rust
+    // search handler signature
+    async fn search(
+        collection_name: web::Path<String>, // Extracts {collection_name}
+        req: web::Json<QueryRequest>,       // Extracts JSON body
+        manager: web::Data<RwLock<CollectionManager>>, // Accesses shared state
+    ) -> impl Responder {
+        // ... handler logic ...
+    }
+    ```
+
+5.  **Response Serialization (`SuccessResponse`, `ErrorResponse`):** To provide consistent API responses, `letsearch` uses standard wrapper structs:
+    *   `SuccessResponse<T>`: Wraps successful results (`data: T`), includes status ("ok"), and processing time.
+    *   `ErrorResponse`: Used for errors, includes status ("error"), an error message, and processing time.
+    Both implement `serde::Serialize` to be easily converted to JSON. Handler functions return types implementing `impl Responder`, commonly `HttpResponse::Ok().json(...)` or `HttpResponse::NotFound().json(...)`.
+
+    ```rust
+    #[derive(Serialize)]
+    struct SuccessResponse<T: Serialize> {
+        data: T,
+        status: String,
+        time: f64,
+    }
+    // ... ErrorResponse similar ...
+
+    // Example usage in a handler
+    let results = manager.read().await.search(/*...*/).await;
+    match results {
+        Ok(data) => HttpResponse::Ok().json(SuccessResponse::new(
+            SearchResultsResponse { results: data }, // Actual payload
+            start, // For timing
+        )),
+        Err(e) => HttpResponse::NotFound().json(ErrorResponse::new(e.to_string(), start)),
+    }
+    ```
+
+6.  **Middleware (`Logger`):** Actix middleware intercepts requests/responses to perform cross-cutting actions. `letsearch` uses `actix_web::middleware::Logger` to automatically log incoming requests and their outcomes.
+
+    ```rust
+    // In HttpServer::new closure
+    App::new()
+        .wrap(Logger::new("from %a to %r with %s in %T secs")) // Add logging
+        // ... app_data, routes ...
+    ```
+
+## API Endpoints
+
+The `run_server` function initializes and starts the Actix web server, configuring the following routes:
+
+1.  **`GET /` - Health Check:**
+    *   Handler: `healthcheck()`
+    *   Purpose: Simple endpoint to verify the server is running.
+    *   Response: JSON object with server version and status "ok".
+    ```rust
+    async fn healthcheck() -> impl Responder {
+        let start = Instant::now();
+        let response = SuccessResponse::new(
+            HelthcheckResponse { /* ... version, status ... */ },
+            start,
+        );
+        HttpResponse::Ok().json(response)
+    }
+    ```
+
+2.  **`GET /collections` - List Collections:**
+    *   Handler: `get_collections(manager: web::Data<RwLock<CollectionManager>>)`
+    *   Purpose: Retrieve a list of currently loaded collections and their configurations (name, indexed columns).
+    *   Interaction: Acquires a read lock on the `CollectionManager` and calls its `get_collection_configs()` method.
+    *   Response: JSON array of collection configurations wrapped in `SuccessResponse`.
+    ```rust
+    async fn get_collections(manager: web::Data<RwLock<CollectionManager>>) -> impl Responder {
+        let start = Instant::now();
+        let manager_guard = manager.read().await; // Acquire read lock
+        let configs = manager_guard.get_collection_configs().await;
+        // ... map configs to presentable format ...
+        let response = SuccessResponse::new(
+            CollectionsResponse { collections: /* ... */ },
+            start,
+        );
+        HttpResponse::Ok().json(response)
+    } // Read lock released when manager_guard goes out of scope
+    ```
+
+3.  **`GET /collections/{collection_name}` - Get Collection Details:**
+    *   Handler: `get_collection(collection_name: web::Path<String>, manager: web::Data<RwLock<CollectionManager>>)`
+    *   Purpose: Get configuration details for a specific collection identified by `collection_name` in the path.
+    *   Interaction: Acquires read lock, calls `CollectionManager::get_collection_config(name)`.
+    *   Response: JSON object of the specific collection's config (wrapped in `SuccessResponse`) or a 404 `ErrorResponse` if not found.
+
+4.  **`POST /collections/{collection_name}/search` - Perform Search:**
+    *   Handler: `search(collection_name: web::Path<String>, req: web::Json<QueryRequest>, manager: web::Data<RwLock<CollectionManager>>)`
+    *   Purpose: Execute a vector similarity search within a specified collection and column.
+    *   Request Body (`QueryRequest`): Requires `column_name` (string), `query` (string), and optional `limit` (u32, default 10, max 100).
+    ```rust
+    #[derive(Deserialize)]
+    struct QueryRequest {
+        column_name: String,
+        query: String,
+        limit: Option<u32>,
+    }
+    ```
+    *   Interaction: Acquires read lock, calls `CollectionManager::search(name, column, query, limit)`. This involves embedding the query and querying the [VectorIndex](vectorindex.mdc).
+    *   Response: JSON array of `SearchResult` objects (containing document content and similarity score) wrapped in `SuccessResponse`, or an `ErrorResponse` (e.g., 404 if collection/column not found, 400 for invalid input).
+    ```rust
+    // Simplified search handler logic
+    async fn search(/*... args ...*/) -> impl Responder {
+        let start = Instant::now();
+        let name = collection_name.into_inner();
+        let limit = req.limit.unwrap_or(10);
+        // ... input validation (e.g., limit range) ...
+
+        let manager_guard = manager.read().await; // Acquire read lock
+        let results = manager_guard
+            .search(name, req.column_name.clone(), req.query.clone(), limit)
+            .await; // Delegate to CollectionManager
+
+        match results {
+            Ok(search_results) => HttpResponse::Ok().json(SuccessResponse::new(
+                SearchResultsResponse { results: search_results }, start)),
+            Err(e) => HttpResponse::NotFound().json(ErrorResponse::new(e.to_string(), start)),
+        }
+    } // Read lock released
+    ```
+
+## Internal Implementation
+
+Let's trace the flow of a `POST /collections/my_docs/search` request:
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant ActixApp as Actix Web Server
+    participant Logger as Logger Middleware
+    participant SearchHandler as search()
+    participant State as web::Data<RwLock<CM>>
+    participant CM as CollectionManager
+
+    Client->>+ActixApp: POST /collections/my_docs/search (JSON body)
+    ActixApp->>+Logger: Request passes through logger
+    Logger-->>-ActixApp: Logged request info
+    ActixApp->>+SearchHandler: Route matched, invoke search handler
+    SearchHandler->>SearchHandler: Extract path param "my_docs"
+    SearchHandler->>SearchHandler: Deserialize JSON body into QueryRequest
+    SearchHandler->>+State: Request access to shared CollectionManager
+    State->>State: Acquire read lock on RwLock
+    State-->>-SearchHandler: Provide access guard to CollectionManager
+    SearchHandler->>+CM: search("my_docs", "text", "query text", 10)
+    CM->>CM: Embed query, perform vector search (details in [CollectionManager](collectionmanager.mdc))
+    CM-->>-SearchHandler: Return Vec<SearchResult> or Error
+    SearchHandler->>State: Read lock guard goes out of scope (lock released)
+    SearchHandler->>SearchHandler: Wrap results/error in SuccessResponse/ErrorResponse
+    SearchHandler->>+ActixApp: Return HttpResponse (JSON)
+    ActixApp->>+Logger: Response passes through logger
+    Logger-->>-ActixApp: Logged response info
+    ActixApp-->>-Client: Send HTTP 200 OK (JSON Response) / HTTP 4xx/5xx
+```
+
+**Code Structure (`src/serve.rs`):**
+
+1.  **Response Structs:** `ErrorResponse`, `SuccessResponse`, and specific payload structs (`HelthcheckResponse`, `CollectionsResponse`, etc.) are defined with `#[derive(Serialize)]`. `QueryRequest` uses `#[derive(Deserialize)]`.
+2.  **Handler Functions:** `healthcheck`, `get_collections`, `get_collection`, `search`. Each is an `async fn` returning `impl Responder`. They contain logic for timing, request extraction, interaction with `CollectionManager` via `web::Data`, and response construction.
+3.  **`run_server` Function:**
+    *   The entry point called by `main.rs` when the `serve` command is used.
+    *   Creates a `CollectionManager`.
+    *   Loads the specified initial collection using `collection_manager.load_collection()`.
+    *   Wraps the manager in `web::Data::new(RwLock::new(...))`.
+    *   Creates the `HttpServer` instance.
+    *   Inside `HttpServer::new`, an `App` is configured:
+        *   Shared state is attached via `.app_data()`.
+        *   Middleware (`Logger`) is added via `.wrap()`.
+        *   Routes are defined using `.route()` mapping paths/methods to handlers.
+    *   Binds the server to the specified host and port using `.bind()`.
+    *   Starts the server event loop using `.run().await`.
+
+```rust
+// src/serve.rs (Simplified run_server)
+pub async fn run_server(
+    host: String,
+    port: i32,
+    collection_name: String,
+    token: Option<String>,
+) -> std::io::Result<()> {
+    let collection_manager = CollectionManager::new(token); // Create manager
+    // Load initial collection (Error handling omitted for brevity)
+    let _ = collection_manager.load_collection(collection_name).await.unwrap();
+
+    // Wrap in thread-safe, shareable structures
+    let shared_manager = web::Data::new(RwLock::new(collection_manager));
+
+    log::info!("Starting server at http://{}:{}", host, port);
+
+    HttpServer::new(move || { // Factory closure for each worker thread
+        App::new()
+            .app_data(shared_manager.clone()) // Share manager access
+            .wrap(Logger::default())        // Add request logging
+            // Define API routes
+            .route("/", web::get().to(healthcheck))
+            .route("/collections", web::get().to(get_collections))
+            .route("/collections/{collection_name}", web::get().to(get_collection))
+            .route("/collections/{collection_name}/search", web::post().to(search))
+    })
+    .bind(format!("{host}:{port}"))? // Bind to address
+    .run()                           // Start the server
+    .await
+}
+```
+
+## Conclusion
+
+This chapter detailed how `letsearch` implements its web server component using Actix Web. We covered the core concepts: routing, shared state management with `web::Data` and `RwLock`, request handling, standardized JSON responses, and middleware. You learned about the specific API endpoints exposed for health checks, collection listing/details, and crucially, performing vector similarity searches via `POST` requests. This server component transforms `letsearch` from a CLI tool into an accessible network service.
+
+The next chapter, [CollectionManager](collectionmanager.mdc), will explore the abstraction responsible for managing the lifecycle and operations of the collections served by this API.
+
+
+---
+
+Generated by [Rules for AI](https://github.com/altaidevorg/rules-for-ai)
