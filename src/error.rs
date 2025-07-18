@@ -1,4 +1,7 @@
+use actix::MailboxError;
+use indicatif::style::TemplateError;
 use thiserror::Error;
+use tokio::task::JoinError;
 
 #[derive(Error, Debug)]
 pub enum ProjectError {
@@ -11,7 +14,9 @@ pub enum ProjectError {
     #[error("Anyhow error: {0}")]
     Anyhow(#[from] anyhow::Error),
     #[error("Actor mailbox error: {0}")]
-    Mailbox(#[from] actix::MailboxError),
+    Mailbox(#[from] MailboxError),
     #[error("Join error: {0}")]
-    JoinError(#[from] tokio::task::JoinError),
+    JoinError(#[from] JoinError),
+    #[error("Template error: {0}")]
+    TemplateError(#[from] TemplateError),
 }
