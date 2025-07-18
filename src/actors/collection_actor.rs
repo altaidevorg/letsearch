@@ -113,8 +113,7 @@ impl Handler<ImportJsonl> for CollectionActor {
                 tx.commit()?;
                 Ok(())
             })
-            .await
-            .unwrap()
+            .await?
         })
     }
 }
@@ -156,8 +155,7 @@ impl Handler<ImportParquet> for CollectionActor {
                 tx.commit()?;
                 Ok(())
             })
-            .await
-            .unwrap()
+            .await?
         })
     }
 }
@@ -262,7 +260,7 @@ impl Handler<EmbedColumn> for CollectionActor {
                 
                 let index_clone = vector_index.clone();
                 tokio::task::spawn_blocking(move || -> Result<(), ProjectError> {
-                    let index = index_clone.write().unwrap();
+                    let index = index_clone.write().map_err(|e| ProjectError::Anyhow(anyhow::anyhow!(e.to_string())))?;
                     match embeddings {
                         Embeddings::F16(emb) => {
                             index.add::<UsearchF16>(&keys, emb.as_ptr() as *const UsearchF16, emb.dim().1)?;
@@ -277,7 +275,7 @@ impl Handler<EmbedColumn> for CollectionActor {
             
             let index_clone = vector_index.clone();
             tokio::task::spawn_blocking(move || {
-                index_clone.read().unwrap().save()
+                index_clone.read().map_err(|e| ProjectError::Anyhow(anyhow::anyhow!(e.to_string())))?.save()
             }).await??;
 
             Ok(())
@@ -289,13 +287,14 @@ impl Handler<Search> for CollectionActor {
     type Result = ResponseFuture<Result<Vec<SearchResult>, ProjectError>>;
 
     fn handle(&mut self, msg: Search, _ctx: &mut Context<Self>) -> Self::Result {
-        let vector_index = self.vector_indices.get(&msg.column).unwrap().clone();
+        let vector_index = self.vector_indices.get(&msg.column).cloned();
         let model_manager = self.model_manager.clone();
         let db_path = self.db_path.clone();
         let collection_name = self.config.name.clone();
-        let column_name = msg.column.clone();
-
+        
         Box::pin(async move {
+            let vector_index = vector_index.ok_or_else(|| ProjectError::Anyhow(anyhow::anyhow!("Vector index not found")))?;
+            let column_name = msg.column.clone();
             let query_embedding = model_manager.send(Predict { id: msg.model_id, texts: vec![msg.query] }).await??;
             
             let similarity_results = tokio::task::spawn_blocking({
@@ -303,10 +302,10 @@ impl Handler<Search> for CollectionActor {
                 move || {
                 match query_embedding {
                     Embeddings::F16(emb) => {
-                        index_clone.read().unwrap().search::<UsearchF16>(emb.as_ptr() as *const UsearchF16, emb.dim().1, msg.limit as usize)
+                        index_clone.read().map_err(|e| ProjectError::Anyhow(anyhow::anyhow!(e.to_string())))?.search::<UsearchF16>(emb.as_ptr() as *const UsearchF16, emb.dim().1, msg.limit as usize)
                     }
                     Embeddings::F32(emb) => {
-                        index_clone.read().unwrap().search::<f32>(emb.as_ptr(), emb.dim().1, msg.limit as usize)
+                        index_clone.read().map_err(|e| ProjectError::Anyhow(anyhow::anyhow!(e.to_string())))?.search::<f32>(emb.as_ptr(), emb.dim().1, msg.limit as usize)
                     }
                 }
             }}).await??;
