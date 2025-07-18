@@ -39,7 +39,6 @@ impl ModelManager {
         let model: Arc<RwLock<dyn ONNXModel>> = match model_type {
             Backend::ONNX => Arc::new(RwLock::new(
                 BertONNX::new(model_dir.as_str(), model_file.as_str())
-                    .await
                     .unwrap(),
             )),
             // _ => unreachable!("not implemented"),
@@ -65,7 +64,7 @@ impl ModelManager {
         match models.get(&model_id) {
             Some(model) => {
                 let model_guard = model.read().await; // Lock the RwLock for reading
-                Ok(model_guard.predict_f16(texts).await?)
+                Ok(model_guard.predict_f16(texts)?)
             }
             None => Err(Error::msg("Model not found")),
         }
@@ -80,7 +79,7 @@ impl ModelManager {
         match models.get(&model_id) {
             Some(model) => {
                 let model_guard = model.read().await; // Lock the RwLock for reading
-                Ok(model_guard.predict_f32(texts).await?)
+                Ok(model_guard.predict_f32(texts)?)
             }
             None => Err(Error::msg("Model not found")),
         }
@@ -106,7 +105,7 @@ impl ModelManager {
         match models.get(&model_id) {
             Some(model) => {
                 let model_guard = model.read().await; // Lock the RwLock for reading
-                model_guard.output_dtype().await
+                model_guard.output_dtype()
             }
             None => Err(Error::msg("Model not loaded")),
         }
@@ -117,7 +116,7 @@ impl ModelManager {
         match models.get(&model_id) {
             Some(model) => {
                 let model_guard = model.read().await; // Lock the RwLock for reading
-                model_guard.output_dim().await
+                model_guard.output_dim()
             }
             None => Err(Error::msg("Model not loaded")),
         }

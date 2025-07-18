@@ -1,6 +1,5 @@
 use crate::model::model_utils::{ModelOutputDType, ModelTrait, ONNXModelTrait};
 use anyhow;
-use async_trait::async_trait;
 use half::f16;
 use log::info;
 use ndarray::{Array2, Ix2};
@@ -13,7 +12,6 @@ use std::sync::Arc;
 use std::sync::Once;
 use std::thread::available_parallelism;
 use tokenizers::{PaddingParams, Tokenizer};
-use tokio::task;
 
 static ORT_INIT: Once = Once::new();
 
@@ -25,9 +23,8 @@ pub struct BertONNX {
     needs_token_type_ids: bool,
 }
 
-#[async_trait]
 impl ModelTrait for BertONNX {
-    async fn new(model_dir: &str, model_file: &str) -> anyhow::Result<Self> {
+    fn new(model_dir: &str, model_file: &str) -> anyhow::Result<Self> {
         ORT_INIT.call_once(|| {
             ort::init()
                 .with_name("onnx_model")
@@ -108,10 +105,9 @@ impl ModelTrait for BertONNX {
     }
 }
 
-#[async_trait]
 impl ONNXModelTrait for BertONNX {
-    async fn predict_f16(&self, texts: Vec<&str>) -> anyhow::Result<Arc<Array2<f16>>> {
-        let output_dtype = self.output_dtype().await?;
+    fn predict_f16(&self, texts: Vec<&str>) -> anyhow::Result<Arc<Array2<f16>>> {
+        let output_dtype = self.output_dtype()?;
         assert_eq!(output_dtype, ModelOutputDType::F16);
 
         let inputs: Vec<String> = texts.par_iter().map(|s| s.to_string()).collect();
@@ -122,7 +118,7 @@ impl ONNXModelTrait for BertONNX {
 
         let needs_token_type_ids = self.needs_token_type_ids;
 
-        let (a_ids, a_mask, a_t_ids) = task::spawn_blocking(move || {
+        let (a_ids, a_mask, a_t_ids) = {
             // tokenize inputs
             let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
             let padded_token_length = encodings[0].len();
@@ -150,12 +146,11 @@ impl ONNXModelTrait for BertONNX {
             };
 
             (a_ids, a_mask, a_t_ids)
-        })
-        .await?;
+        };
 
         // Run the model.
 
-        let embeddings_tensor = task::spawn_blocking(move || {
+        let embeddings_tensor = {
             let outputs = if let Some(a_t_ids) = a_t_ids {
                 model
                     .run(ort::inputs![a_ids, a_t_ids, a_mask].unwrap())
@@ -172,14 +167,13 @@ impl ONNXModelTrait for BertONNX {
                 .unwrap();
 
             embeddings_tensor.to_owned()
-        })
-        .await?;
+        };
 
         Ok(Arc::new(embeddings_tensor.to_owned()))
     }
 
-    async fn predict_f32(&self, texts: Vec<&str>) -> anyhow::Result<Arc<Array2<f32>>> {
-        let output_dtype = self.output_dtype().await?;
+    fn predict_f32(&self, texts: Vec<&str>) -> anyhow::Result<Arc<Array2<f32>>> {
+        let output_dtype = self.output_dtype()?;
         assert_eq!(output_dtype, ModelOutputDType::F32);
 
         let inputs: Vec<String> = texts.par_iter().map(|s| s.to_string()).collect();
@@ -190,7 +184,7 @@ impl ONNXModelTrait for BertONNX {
 
         let needs_token_type_ids = self.needs_token_type_ids;
 
-        let (a_ids, a_mask, a_t_ids) = task::spawn_blocking(move || {
+        let (a_ids, a_mask, a_t_ids) = {
             // tokenize inputs
             let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
             let padded_token_length = encodings[0].len();
@@ -218,12 +212,11 @@ impl ONNXModelTrait for BertONNX {
             };
 
             (a_ids, a_mask, a_t_ids)
-        })
-        .await?;
+        };
 
         // Run the model.
 
-        let embeddings_tensor = task::spawn_blocking(move || {
+        let embeddings_tensor = {
             let outputs = if let Some(a_t_ids) = a_t_ids {
                 model
                     .run(ort::inputs![a_ids, a_t_ids, a_mask].unwrap())
@@ -240,17 +233,16 @@ impl ONNXModelTrait for BertONNX {
                 .unwrap();
 
             embeddings_tensor.to_owned()
-        })
-        .await?;
+        };
 
         Ok(Arc::new(embeddings_tensor))
     }
 
-    async fn output_dtype(&self) -> anyhow::Result<ModelOutputDType> {
+    fn output_dtype(&self) -> anyhow::Result<ModelOutputDType> {
         Ok(self.output_dtype.clone())
     }
 
-    async fn output_dim(&self) -> anyhow::Result<i64> {
+    fn output_dim(&self) -> anyhow::Result<i64> {
         Ok(self.output_dim)
     }
 }
