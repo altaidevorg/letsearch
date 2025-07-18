@@ -75,7 +75,7 @@ impl VectorIndex {
         Ok(())
     }
 
-    pub async fn add<T: VectorType>(
+    pub fn add<T: VectorType>(
         &self,
         keys: &Vec<u64>,
         vectors_ptr: *const T,
@@ -102,7 +102,7 @@ impl VectorIndex {
         Ok(())
     }
 
-    pub async fn search<T: VectorType>(
+    pub fn search<T: VectorType>(
         &self,
         vector: *const T,
         vector_dim: usize,

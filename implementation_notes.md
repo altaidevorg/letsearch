@@ -18,10 +18,41 @@ The first task was to set up the basic infrastructure for the actor model withou
 
 This task is complete and the project is in a compilable state.
 
-## Task 2: Refactor Model Trait and Implement ModelManagerActor
+## Task 2: Refactor Model Trait and Implement ModelManagerActor (Completed)
 
-The next step is to refactor the model traits to be synchronous and to implement the `ModelManagerActor`. This involves:
+This task focused on creating the `ModelManagerActor` to handle the lifecycle and prediction requests for embedding models.
 
-1.  **Refactor `ONNXModelTrait`**: Make the methods in `ONNXModelTrait` synchronous by removing the `async_trait` macro and the `async` keyword.
-2.  **Update `BertONNX`**: Update the `BertONNX` implementation to match the new synchronous trait definitions. This includes removing `async` and `spawn_blocking` from the `predict_f32`/`f16` implementations.
-3.  **Implement `ModelManagerActor`**: Create the `ModelManagerActor` in `src/actors/model_actor.rs`. This actor will be responsible for managing the lifecycle of the models and will use `spawn_blocking` to run the synchronous `predict` methods in a non-blocking way.
+1.  **Refactor `ONNXModelTrait`**: The methods in `ONNXModelTrait` were made synchronous, removing `async_trait`.
+2.  **Update `BertONNX`**: The `BertONNX` implementation was updated to match the synchronous trait, with blocking `predict` methods.
+3.  **Implement `ModelManagerActor`**: The `ModelManagerActor` was created in `src/actors/model_actor.rs`. Its handlers for `Predict` messages correctly wrap the synchronous, CPU-bound model inference calls in `tokio::task::spawn_blocking` to avoid blocking the actor's thread.
+
+## Task 3: Implement CollectionActor (Completed)
+
+This task involved creating the `CollectionActor` to manage the state and operations for a single collection.
+
+1.  **Actor and Message Definition**: The `CollectionActor` and its associated messages were defined in `src/actors/collection_actor.rs`.
+2.  **State Management**: The actor's state and handlers were designed to be compatible with the `actix` framework, particularly by handling `!Send` types correctly and managing shared access to vector indices.
+3.  **Handler Implementation**: All message handlers (`ImportJsonl`, `ImportParquet`, `EmbedColumn`, `Search`, `GetConfig`) were implemented.
+
+## Task 4: Implement CollectionManagerActor (Completed)
+
+This task involved creating the `CollectionManagerActor` to serve as the top-level orchestrator and registry for all `CollectionActor` instances.
+
+1.  **Actor and Message Definition**: The `CollectionManagerActor` and its messages (`CreateCollection`, `LoadCollection`, `GetCollectionAddr`, `GetAllCollectionConfigs`) were defined in `src/actors/collection_manager_actor.rs`.
+2.  **Handler Implementation**: All message handlers were implemented, providing the logic for creating, loading, and retrieving collection actors.
+
+## Task 5: Integrate Actors into Web Server (Completed)
+
+This task involved replacing the old shared-state `CollectionManager` in the web server (`src/serve.rs`) with the new actor system.
+
+1.  **Update `run_server` function**: The `run_server` function was updated to instantiate and start the `ModelManagerActor` and `CollectionManagerActor`, and to load the initial collection.
+2.  **Rewrite HTTP Handlers**: The HTTP handlers were rewritten to send messages to the actor system and to handle the responses.
+
+## Task 6: Integrate Actors into CLI (Completed)
+
+The final task was to update the `Index` command in the CLI (`src/main.rs`) to use the actor system.
+
+1.  **Update `main` function**: The `main` function was updated to use `actix::main`.
+2.  **Update `Index` command handler**: The `Index` command handler was rewritten to start the actor system and to send messages for each step of the indexing process (creating a collection, importing data, and embedding columns).
+
+The refactoring to an actor-based model is now complete. The project is in a compilable and functional state, and the core components have been migrated to the new architecture.

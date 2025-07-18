@@ -229,7 +229,6 @@ impl Collection {
                 let index_guard = index.write().await;
                 index_guard
                     .add::<UsearchF16>(&keys, emb.as_ptr() as *const UsearchF16, vector_dim)
-                    .await
                     .unwrap();
             }
             Embeddings::F32(emb) => {
@@ -240,7 +239,6 @@ impl Collection {
                 let index_guard = index.write().await;
                 index_guard
                     .add::<f32>(&keys, emb.as_ptr(), vector_dim)
-                    .await
                     .unwrap();
 
                 debug!("output shape: {:?}", emb.dim());
@@ -391,8 +389,7 @@ impl Collection {
                         emb.as_ptr() as *const UsearchF16,
                         vector_dim,
                         limit as usize,
-                    )
-                    .await?
+                    )?
             }
             Embeddings::F32(emb) => {
                 let (_, vector_dim) = emb.dim();
@@ -405,8 +402,7 @@ impl Collection {
                     .ok_or_else(|| anyhow::anyhow!("Index not found for {}", column_name))?
                     .read()
                     .await
-                    .search::<f32>(emb.as_ptr(), vector_dim, limit as usize)
-                    .await?
+                    .search::<f32>(emb.as_ptr(), vector_dim, limit as usize)?
             }
         };
 

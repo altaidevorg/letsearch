@@ -2,12 +2,15 @@ use anyhow;
 use chrono;
 use clap::{Parser, Subcommand};
 use env_logger::fmt::Formatter;
-use letsearch::collection::collection_manager::CollectionManager;
+use letsearch::actors::collection_actor::{EmbedColumn, ImportJsonl, ImportParquet};
+use letsearch::actors::collection_manager_actor::{CollectionManagerActor, CreateCollection};
+use letsearch::actors::model_actor::{LoadModel, ModelManagerActor};
 use letsearch::collection::collection_utils::CollectionConfig;
 use letsearch::hf_ops::list_models;
 use letsearch::serve::run_server;
 use log::{info, Record};
 use std::io::Write;
+use actix::Actor;
 
 /// CLI application for indexing and searching documents
 #[derive(Parser, Debug)]
@@ -94,7 +97,7 @@ pub enum Commands {
     },
 }
 
-#[tokio::main]
+#[actix::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::builder()
         .format(|buf: &mut Formatter, record: &Record| {
@@ -129,39 +132,53 @@ async fn main() -> anyhow::Result<()> {
             config.model_name = model.to_string();
             config.model_variant = variant.to_string();
 
-            let token = if let Some(token) = hf_token {
-                Some(token.to_string())
-            } else {
-                if let Ok(token) = std::env::var("HF_TOKEN") {
-                    Some(token)
-                } else {
-                    None
-                }
-            };
+            let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
 
-            let collection_manager = CollectionManager::new(token);
-            collection_manager
-                .create_collection(config, overwrite.to_owned())
-                .await?;
+            let model_manager_addr = ModelManagerActor::new().start();
+            let collection_manager_addr =
+                CollectionManagerActor::new(token.clone(), model_manager_addr.clone()).start();
+
+            let collection_addr = collection_manager_addr
+                .send(CreateCollection {
+                    config,
+                    overwrite: *overwrite,
+                })
+                .await??;
             info!("Collection '{}' created", collection_name);
 
             if files.ends_with(".jsonl") {
-                collection_manager
-                    .import_jsonl(&collection_name, files)
-                    .await?;
+                collection_addr
+                    .send(ImportJsonl {
+                        path: files.to_string(),
+                    })
+                    .await??;
             } else if files.ends_with(".parquet") {
-                collection_manager
-                    .import_parquet(&collection_name, files)
-                    .await?;
+                collection_addr
+                    .send(ImportParquet {
+                        path: files.to_string(),
+                    })
+                    .await??;
             } else {
                 return Err(anyhow::anyhow!("This file is currently not supported"));
             }
 
             if !index_columns.is_empty() {
+                let model_id = model_manager_addr
+                    .send(LoadModel {
+                        path: model.to_string(),
+                        variant: variant.to_string(),
+                        token,
+                    })
+                    .await??;
+
                 for column_name in index_columns {
-                    collection_manager
-                        .embed_column(&collection_name, column_name, batch_size.to_owned())
-                        .await?;
+                    collection_addr
+                        .send(EmbedColumn {
+                            name: column_name.to_string(),
+                            batch_size: *batch_size,
+                            model_id,
+                        })
+                        .await??;
                 }
             }
         }
@@ -172,15 +189,7 @@ async fn main() -> anyhow::Result<()> {
             port,
             hf_token,
         } => {
-            let token = if let Some(token) = hf_token {
-                Some(token.to_string())
-            } else {
-                if let Ok(token) = std::env::var("HF_TOKEN") {
-                    Some(token)
-                } else {
-                    None
-                }
-            };
+            let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
 
             run_server(
                 host.to_string(),
@@ -192,15 +201,7 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Commands::ListModels { hf_token } => {
-            let token = if let Some(token) = hf_token {
-                Some(token.to_string())
-            } else {
-                if let Ok(token) = std::env::var("HF_TOKEN") {
-                    Some(token)
-                } else {
-                    None
-                }
-            };
+            let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
             list_models(token).await?;
         }
     }

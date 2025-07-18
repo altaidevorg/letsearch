@@ -8,5 +8,10 @@ pub enum ProjectError {
     ModelNotFound(u32),
     #[error("Database error: {0}")]
     DatabaseError(#[from] duckdb::Error),
-    // ... other error variants
+    #[error("Anyhow error: {0}")]
+    Anyhow(#[from] anyhow::Error),
+    #[error("Actor mailbox error: {0}")]
+    Mailbox(#[from] actix::MailboxError),
+    #[error("Join error: {0}")]
+    JoinError(#[from] tokio::task::JoinError),
 }
