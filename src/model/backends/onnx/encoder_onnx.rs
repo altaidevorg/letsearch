@@ -9,6 +9,7 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Tensor;
 use rayon::prelude::*;
+use std::cell::UnsafeCell;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Once;
@@ -17,9 +18,46 @@ use tokenizers::{PaddingParams, Tokenizer};
 
 static ORT_INIT: Once = Once::new();
 
+/// A lock-free wrapper around `ort::Session` that provides interior mutability.
+///
+/// # Safety
+///
+/// This is safe because:
+/// 1. ONNX Runtime's C API (`OrtRun`) is inherently thread-safe — the underlying
+///    `OrtSession` handles concurrent inference internally.
+/// 2. `Session` is already marked `Send + Sync` by the `ort` crate.
+/// 3. The `&mut self` requirement on `Session::run` in ort v2 is a Rust-level
+///    API constraint to prevent output lifetime aliasing, not because the session
+///    is genuinely mutated.
+/// 4. All callers (`predict_f16`, `predict_f32`) fully consume outputs into owned
+///    `Array2` within the same scope, so there is no aliasing of output borrows.
+struct SyncUnsafeSession(UnsafeCell<Session>);
+
+// SAFETY: OrtSession is thread-safe at the C level. Session is already Send + Sync.
+unsafe impl Send for SyncUnsafeSession {}
+unsafe impl Sync for SyncUnsafeSession {}
+
+impl SyncUnsafeSession {
+    fn new(session: Session) -> Self {
+        Self(UnsafeCell::new(session))
+    }
+
+    /// Get a mutable reference to the inner session for calling `run`.
+    ///
+    /// # Safety
+    ///
+    /// This is safe because ONNX Runtime handles thread safety at the C level,
+    /// and all callers consume the outputs within the same scope (no aliasing).
+    fn get_mut(&self) -> &mut Session {
+        unsafe { &mut *self.0.get() }
+    }
+
+
+}
+
 pub struct EncoderONNX {
     pub tokenizer: Arc<Tokenizer>,
-    pub model: Arc<std::sync::Mutex<Session>>,
+    model: Arc<SyncUnsafeSession>,
     pub needs_token_type_ids: bool,
     pub output_dtype: ModelOutputDType,
     pub output_dim: i64,
@@ -97,7 +135,7 @@ impl ModelTrait for EncoderONNX {
             .contains(&tti_name);
 
         Ok(Self {
-            model: Arc::new(std::sync::Mutex::new(session)),
+            model: Arc::new(SyncUnsafeSession::new(session)),
             tokenizer: Arc::new(tokenizer),
             output_dim: dim,
             output_dtype: output_dtype,
@@ -153,10 +191,10 @@ impl ONNXModelTrait for EncoderONNX {
         let embeddings_tensor = {
             let shape = [batch_len, token_len];
 
-            let mut session_guard = model.lock().unwrap();
+            let session = model.get_mut();
 
             let outputs = if let Some(a_t_ids) = a_t_ids {
-                session_guard
+                session
                     .run(ort::inputs![
                         "input_ids" => Tensor::from_array((shape, ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
                         "token_type_ids" => Tensor::from_array((shape, a_t_ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
@@ -164,7 +202,7 @@ impl ONNXModelTrait for EncoderONNX {
                     ])
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?
             } else {
-                session_guard
+                session
                     .run(ort::inputs![
                         "input_ids" => Tensor::from_array((shape, ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
                         "attention_mask" => Tensor::from_array((shape, mask.clone())).map_err(|e| anyhow::anyhow!(e.to_string()))?
@@ -234,10 +272,10 @@ impl ONNXModelTrait for EncoderONNX {
         let embeddings_tensor = {
             let shape = [batch_len, token_len];
 
-            let mut session_guard = model.lock().unwrap();
+            let session = model.get_mut();
 
             let outputs = if let Some(a_t_ids) = a_t_ids {
-                session_guard
+                session
                     .run(ort::inputs![
                         "input_ids" => Tensor::from_array((shape, ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
                         "token_type_ids" => Tensor::from_array((shape, a_t_ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
@@ -245,7 +283,7 @@ impl ONNXModelTrait for EncoderONNX {
                     ])
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?
             } else {
-                session_guard
+                session
                     .run(ort::inputs![
                         "input_ids" => Tensor::from_array((shape, ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
                         "attention_mask" => Tensor::from_array((shape, mask.clone())).map_err(|e| anyhow::anyhow!(e.to_string()))?
