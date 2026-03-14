@@ -89,16 +89,14 @@ pub struct CollectionDbActor {
 
 impl CollectionDbActor {
     pub fn new(config: CollectionConfig) -> Self {
-        let collection_dir = home_dir()
-            .join("collections")
-            .join(config.name.as_str());
-            
+        let collection_dir = home_dir().join("collections").join(config.name.as_str());
+
         // ensure dir exists
         std::fs::create_dir_all(&collection_dir).unwrap();
-        
+
         let db_path = collection_dir.join(config.db_path.as_str());
         let conn = duckdb::Connection::open(&db_path).expect("Failed to open DuckDB connection");
-            
+
         let mut vector_indices = HashMap::new();
         let index_dir = collection_dir.join(config.index_dir.as_str());
         if index_dir.exists() && !config.index_columns.is_empty() {
@@ -109,7 +107,7 @@ impl CollectionDbActor {
                 }
             }
         }
-        
+
         Self {
             conn,
             vector_indices,
@@ -238,14 +236,19 @@ impl Handler<DbGetBatch> for CollectionDbActor {
         }
         let batch = &result[0];
 
-        let col_array = batch.column_by_name(&msg.column)
+        let col_array = batch
+            .column_by_name(&msg.column)
             .ok_or_else(|| ProjectError::Anyhow(anyhow!("Column '{}' not found", msg.column)))?
             .as_any()
             .downcast_ref::<StringArray>()
             .ok_or_else(|| ProjectError::Anyhow(anyhow!("Column is not of type String")))?;
-        let col_values: Vec<String> = col_array.iter().map(|s| s.unwrap_or_default().to_string()).collect();
+        let col_values: Vec<String> = col_array
+            .iter()
+            .map(|s| s.unwrap_or_default().to_string())
+            .collect();
 
-        let key_array = batch.column_by_name("_key")
+        let key_array = batch
+            .column_by_name("_key")
             .ok_or_else(|| ProjectError::Anyhow(anyhow!("_key column not found")))?
             .as_any()
             .downcast_ref::<PrimitiveArray<UInt64Type>>()
@@ -261,13 +264,20 @@ impl Handler<DbAddEmbeddings> for CollectionDbActor {
 
     fn handle(&mut self, msg: DbAddEmbeddings, _ctx: &mut SyncContext<Self>) -> Self::Result {
         let index = self.vector_indices.get_mut(&msg.column).ok_or_else(|| {
-            ProjectError::Anyhow(anyhow!("Vector index for column '{}' not found", msg.column))
+            ProjectError::Anyhow(anyhow!(
+                "Vector index for column '{}' not found",
+                msg.column
+            ))
         })?;
 
         match msg.embeddings {
             Embeddings::F16(emb) => {
                 let (_, vector_dim) = emb.dim();
-                index.add::<UsearchF16>(&msg.keys, emb.as_ptr() as *const UsearchF16, vector_dim)?;
+                index.add::<UsearchF16>(
+                    &msg.keys,
+                    emb.as_ptr() as *const UsearchF16,
+                    vector_dim,
+                )?;
             }
             Embeddings::F32(emb) => {
                 let (_, vector_dim) = emb.dim();
@@ -283,7 +293,10 @@ impl Handler<DbSaveIndex> for CollectionDbActor {
 
     fn handle(&mut self, msg: DbSaveIndex, _ctx: &mut SyncContext<Self>) -> Self::Result {
         let index = self.vector_indices.get(&msg.column).ok_or_else(|| {
-            ProjectError::Anyhow(anyhow!("Vector index for column '{}' not found", msg.column))
+            ProjectError::Anyhow(anyhow!(
+                "Vector index for column '{}' not found",
+                msg.column
+            ))
         })?;
         index.save()?;
         Ok(())
@@ -295,7 +308,10 @@ impl Handler<DbSearchAndFetch> for CollectionDbActor {
 
     fn handle(&mut self, msg: DbSearchAndFetch, _ctx: &mut SyncContext<Self>) -> Self::Result {
         let index = self.vector_indices.get(&msg.column).ok_or_else(|| {
-            ProjectError::Anyhow(anyhow!("Vector index for column '{}' not found", msg.column))
+            ProjectError::Anyhow(anyhow!(
+                "Vector index for column '{}' not found",
+                msg.column
+            ))
         })?;
 
         let similarity_results = match msg.query_embedding {
@@ -304,11 +320,7 @@ impl Handler<DbSearchAndFetch> for CollectionDbActor {
                 emb.dim().1,
                 msg.limit,
             )?,
-            Embeddings::F32(emb) => index.search::<f32>(
-                emb.as_ptr(), 
-                emb.dim().1, 
-                msg.limit
-            )?,
+            Embeddings::F32(emb) => index.search::<f32>(emb.as_ptr(), emb.dim().1, msg.limit)?,
         };
 
         let keys: Vec<u64> = similarity_results.iter().map(|r| r.key).collect();
@@ -316,40 +328,45 @@ impl Handler<DbSearchAndFetch> for CollectionDbActor {
             return Ok(Vec::new());
         }
 
-        let keys_str = keys.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(", ");
+        let keys_str = keys
+            .iter()
+            .map(|k| k.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
         let query = format!(
             "SELECT _key, {} FROM {} WHERE _key IN ({});",
             msg.column, self.config.name, keys_str
         );
         let mut stmt = self.conn.prepare(&query)?;
-        
+
         let rbs: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
-        let rb = rbs.first().ok_or_else(|| {
-            ProjectError::Anyhow(anyhow!("No records found"))
-        })?;
-        
+        let rb = rbs
+            .first()
+            .ok_or_else(|| ProjectError::Anyhow(anyhow!("No records found")))?;
+
         let key_array = rb
             .column_by_name("_key")
             .ok_or_else(|| ProjectError::Anyhow(anyhow!("Column '_key' not found")))?
             .as_any()
             .downcast_ref::<PrimitiveArray<UInt64Type>>()
             .ok_or_else(|| ProjectError::Anyhow(anyhow!("_key is not of type UInt64")))?;
-            
+
         let text_array = rb
             .column_by_name(&msg.column)
             .ok_or_else(|| ProjectError::Anyhow(anyhow!("Column '{}' not found", msg.column)))?
             .as_any()
             .downcast_ref::<StringArray>()
             .ok_or_else(|| ProjectError::Anyhow(anyhow!("Column is not of type String")))?;
-            
+
         let mut content_map = key_array
             .iter()
             .zip(text_array.iter())
             .filter_map(|(k, v)| k.map(|k_val| (k_val, v.map(|v_val| v_val.to_string()))))
             .filter_map(|(k, v)| v.map(|v_val| (k, v_val)))
             .collect::<HashMap<_, _>>();
-            
-        let ordered_contents: Vec<String> = keys.iter().filter_map(|k| content_map.remove(k)).collect();
+
+        let ordered_contents: Vec<String> =
+            keys.iter().filter_map(|k| content_map.remove(k)).collect();
 
         let search_results = similarity_results
             .into_iter()
@@ -376,9 +393,7 @@ pub struct CollectionActor {
 impl CollectionActor {
     pub fn new(config: CollectionConfig, model_manager: Addr<ModelManagerActor>) -> Self {
         let config_clone = config.clone();
-        let db_actor = SyncArbiter::start(1, move || {
-            CollectionDbActor::new(config_clone.clone())
-        });
+        let db_actor = SyncArbiter::start(1, move || CollectionDbActor::new(config_clone.clone()));
 
         Self {
             config,
@@ -473,11 +488,22 @@ impl Handler<EmbedColumn> for CollectionActor {
             let batch_size = msg.batch_size;
             let model_id = msg.model_id;
 
-            let count = db_actor.send(DbGetRowCount { column: column_name.clone() }).await??;
+            let count = db_actor
+                .send(DbGetRowCount {
+                    column: column_name.clone(),
+                })
+                .await??;
             let num_batches = (count + batch_size - 1) / batch_size;
-            info!("Starting to index {} records from column '{}' in batches of {}", count, column_name, batch_size);
+            info!(
+                "Starting to index {} records from column '{}' in batches of {}",
+                count, column_name, batch_size
+            );
 
-            let has_index = db_actor.send(DbCheckIndex { column: column_name.clone() }).await??;
+            let has_index = db_actor
+                .send(DbCheckIndex {
+                    column: column_name.clone(),
+                })
+                .await??;
 
             if !has_index {
                 let (vector_dim, output_dtype) = model_manager
@@ -490,11 +516,13 @@ impl Handler<EmbedColumn> for CollectionActor {
                     ModelOutputDType::Int8 => ScalarKind::I8,
                 };
 
-                db_actor.send(DbInitIndex {
-                    column: column_name.clone(),
-                    dimensions: vector_dim as usize,
-                    quantization: scalar_kind,
-                }).await??;
+                db_actor
+                    .send(DbInitIndex {
+                        column: column_name.clone(),
+                        dimensions: vector_dim as usize,
+                        quantization: scalar_kind,
+                    })
+                    .await??;
             }
 
             let start = Instant::now();
@@ -514,11 +542,13 @@ impl Handler<EmbedColumn> for CollectionActor {
 
                 let offset = batch * batch_size;
 
-                let (texts, keys) = db_actor.send(DbGetBatch {
-                    column: column_name.clone(),
-                    batch_size,
-                    offset,
-                }).await??;
+                let (texts, keys) = db_actor
+                    .send(DbGetBatch {
+                        column: column_name.clone(),
+                        batch_size,
+                        offset,
+                    })
+                    .await??;
 
                 if texts.is_empty() {
                     break;
@@ -531,14 +561,20 @@ impl Handler<EmbedColumn> for CollectionActor {
                     })
                     .await??;
 
-                db_actor.send(DbAddEmbeddings {
-                    column: column_name.clone(),
-                    keys,
-                    embeddings,
-                }).await??;
+                db_actor
+                    .send(DbAddEmbeddings {
+                        column: column_name.clone(),
+                        keys,
+                        embeddings,
+                    })
+                    .await??;
             }
 
-            db_actor.send(DbSaveIndex { column: column_name.clone() }).await??;
+            db_actor
+                .send(DbSaveIndex {
+                    column: column_name.clone(),
+                })
+                .await??;
 
             println!("");
             info!("Total duration: {:?}", start.elapsed());
@@ -563,11 +599,13 @@ impl Handler<Search> for CollectionActor {
                 })
                 .await??;
 
-            let search_results = db_actor.send(DbSearchAndFetch {
-                column: msg.column,
-                query_embedding,
-                limit: msg.limit as usize,
-            }).await??;
+            let search_results = db_actor
+                .send(DbSearchAndFetch {
+                    column: msg.column,
+                    query_embedding,
+                    limit: msg.limit as usize,
+                })
+                .await??;
 
             Ok(search_results)
         })

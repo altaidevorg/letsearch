@@ -25,7 +25,9 @@ pub struct VectorIndex {
 impl VectorIndex {
     pub fn new(index_dir: PathBuf, overwrite: bool) -> anyhow::Result<Self> {
         debug!("creating new VectorIndex instance");
-        let index_dir_str = index_dir.to_str().ok_or_else(|| anyhow::anyhow!("Invalid unicode in index directory path"))?;
+        let index_dir_str = index_dir
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid unicode in index directory path"))?;
         if overwrite && index_dir.exists() {
             debug!("index already exists, overwriting");
             fs::remove_dir_all(index_dir_str)?;
@@ -45,14 +47,18 @@ impl VectorIndex {
         capacity: usize,
     ) -> anyhow::Result<&Self> {
         let index = new_index(options).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        index.reserve(capacity).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        index
+            .reserve(capacity)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         self.index = Some(index);
         Ok(self)
     }
 
     pub fn from(path: PathBuf) -> anyhow::Result<Self> {
         let index_path = path.join("index.bin");
-        let index_path_str = index_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid unicode in index path"))?;
+        let index_path_str = index_path
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("Invalid unicode in index path"))?;
         info!("Index path: {:?}", index_path_str);
         let config = IndexOptions::default();
         let index = Index::new(&config)?;
@@ -68,9 +74,18 @@ impl VectorIndex {
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
-        let index = self.index.as_ref().ok_or_else(|| anyhow::anyhow!("VectorIndex not initialized"))?;
+        let index = self
+            .index
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("VectorIndex not initialized"))?;
         let index_path = self.path.join("index.bin");
-        index.save(index_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid unicode in index path"))?).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        index
+            .save(
+                index_path
+                    .to_str()
+                    .ok_or_else(|| anyhow::anyhow!("Invalid unicode in index path"))?,
+            )
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
         Ok(())
     }
@@ -81,7 +96,10 @@ impl VectorIndex {
         vectors_ptr: *const T,
         vector_dim: usize,
     ) -> anyhow::Result<()> {
-        let index = self.index.as_ref().ok_or_else(|| anyhow::anyhow!("VectorIndex not initialized"))?;
+        let index = self
+            .index
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("VectorIndex not initialized"))?;
         let current_capacity = index.capacity();
         let size = index.size();
         let count = keys.len();
@@ -92,13 +110,17 @@ impl VectorIndex {
         }
 
         let shared_vectors = Arc::new(PtrBox { ptr: vectors_ptr });
-        keys.par_iter().enumerate().try_for_each(|(i, _key)| -> anyhow::Result<()> {
-            let vectors = shared_vectors.clone();
-            let vector_offset = unsafe { vectors.ptr.add(i * vector_dim) };
-            let vector: &[T] = unsafe { std::slice::from_raw_parts(vector_offset, vector_dim) };
-            index.add(keys[i], vector).map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            Ok(())
-        })?;
+        keys.par_iter()
+            .enumerate()
+            .try_for_each(|(i, _key)| -> anyhow::Result<()> {
+                let vectors = shared_vectors.clone();
+                let vector_offset = unsafe { vectors.ptr.add(i * vector_dim) };
+                let vector: &[T] = unsafe { std::slice::from_raw_parts(vector_offset, vector_dim) };
+                index
+                    .add(keys[i], vector)
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                Ok(())
+            })?;
 
         Ok(())
     }
@@ -110,7 +132,10 @@ impl VectorIndex {
         count: usize,
     ) -> anyhow::Result<Vec<SimilarityResult>> {
         let query_vector: &[T] = unsafe { std::slice::from_raw_parts(vector, vector_dim) };
-        let index = self.index.as_ref().ok_or_else(|| anyhow::anyhow!("VectorIndex not initialized"))?;
+        let index = self
+            .index
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("VectorIndex not initialized"))?;
 
         let matches = index.search(query_vector, count)?;
         let results: Vec<SimilarityResult> = matches

@@ -1,15 +1,15 @@
+use crate::actors::collection_actor::{GetConfig, Search as SearchMsg};
 use crate::actors::collection_manager_actor::{
     CollectionManagerActor, GetAllCollectionConfigs, GetCollectionAddr, GetModelIdForCollection,
     LoadCollection,
 };
 use crate::actors::model_actor::ModelManagerActor;
 use crate::collection::collection_utils::SearchResult;
+use actix::{Actor, Addr};
 use actix_web::middleware::Logger;
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
-use actix::{Actor, Addr};
-use crate::actors::collection_actor::{GetConfig, Search as SearchMsg};
 
 #[derive(Serialize)]
 struct ErrorResponse {
@@ -131,13 +131,17 @@ async fn get_collection(
                     },
                     start,
                 )),
-                _ => HttpResponse::InternalServerError()
-                    .json(ErrorResponse::new("Failed to get collection config".to_string(), start)),
+                _ => HttpResponse::InternalServerError().json(ErrorResponse::new(
+                    "Failed to get collection config".to_string(),
+                    start,
+                )),
             }
         }
         Ok(Err(e)) => HttpResponse::NotFound().json(ErrorResponse::new(e.to_string(), start)),
-        _ => HttpResponse::InternalServerError()
-            .json(ErrorResponse::new("Failed to find collection".to_string(), start)),
+        _ => HttpResponse::InternalServerError().json(ErrorResponse::new(
+            "Failed to find collection".to_string(),
+            start,
+        )),
     }
 }
 
@@ -160,9 +164,7 @@ async fn search(
 
     match collection_addr_result {
         Ok(Ok(collection_addr)) => {
-            let model_id_result = manager
-                .send(GetModelIdForCollection { name })
-                .await;
+            let model_id_result = manager.send(GetModelIdForCollection { name }).await;
 
             match model_id_result {
                 Ok(Ok(model_id)) => {
@@ -184,13 +186,17 @@ async fn search(
                             .json(ErrorResponse::new("Search failed".to_string(), start)),
                     }
                 }
-                _ => HttpResponse::InternalServerError()
-                    .json(ErrorResponse::new("Failed to get model id".to_string(), start)),
+                _ => HttpResponse::InternalServerError().json(ErrorResponse::new(
+                    "Failed to get model id".to_string(),
+                    start,
+                )),
             }
         }
         Ok(Err(e)) => HttpResponse::NotFound().json(ErrorResponse::new(e.to_string(), start)),
-        _ => HttpResponse::InternalServerError()
-            .json(ErrorResponse::new("Failed to find collection".to_string(), start)),
+        _ => HttpResponse::InternalServerError().json(ErrorResponse::new(
+            "Failed to find collection".to_string(),
+            start,
+        )),
     }
 }
 
@@ -210,7 +216,10 @@ pub async fn run_server(
         })
         .await;
 
-    if let Err(e) = load_result.map_err(|e| anyhow::anyhow!(e)).and_then(|r| r.map_err(|e| anyhow::anyhow!(e))) {
+    if let Err(e) = load_result
+        .map_err(|e| anyhow::anyhow!(e))
+        .and_then(|r| r.map_err(|e| anyhow::anyhow!(e)))
+    {
         panic!("Failed to load initial collection: {:?}", e);
     }
 

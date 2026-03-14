@@ -91,11 +91,7 @@ impl Handler<GetCollectionAddr> for CollectionManagerActor {
 impl Handler<GetAllCollectionConfigs> for CollectionManagerActor {
     type Result = ResponseFuture<Result<Vec<CollectionConfig>, ProjectError>>;
 
-    fn handle(
-        &mut self,
-        _msg: GetAllCollectionConfigs,
-        _ctx: &mut Context<Self>,
-    ) -> Self::Result {
+    fn handle(&mut self, _msg: GetAllCollectionConfigs, _ctx: &mut Context<Self>) -> Self::Result {
         let futures: Vec<_> = self
             .collections
             .values()
@@ -209,9 +205,7 @@ impl Handler<GetModelIdForCollection> for CollectionManagerActor {
         let collection_addr = match self.collections.get(&msg.name) {
             Some(addr) => addr.clone(),
             None => {
-                return Box::pin(async move {
-                    Err(ProjectError::CollectionNotFound(msg.name))
-                });
+                return Box::pin(async move { Err(ProjectError::CollectionNotFound(msg.name)) });
             }
         };
 

@@ -1,3 +1,4 @@
+use actix::Actor;
 use anyhow;
 use chrono;
 use clap::{Parser, Subcommand};
@@ -10,7 +11,6 @@ use letsearch::hf_ops::list_models;
 use letsearch::serve::run_server;
 use log::{info, Record};
 use std::io::Write;
-use actix::Actor;
 
 /// CLI application for indexing and searching documents
 #[derive(Parser, Debug)]
