@@ -1,7 +1,7 @@
-use crate::actors::collection_actor::{GetConfig, Search as SearchMsg};
+use crate::actors::collection_actor::GetConfig;
 use crate::actors::collection_manager_actor::{
-    CollectionManagerActor, GetAllCollectionConfigs, GetCollectionAddr, GetModelIdForCollection,
-    LoadCollection,
+    CollectionManagerActor, GetAllCollectionConfigs, GetCollectionAddr,
+    LoadCollection, SearchCollection
 };
 use crate::actors::model_actor::ModelManagerActor;
 use crate::collection::collection_utils::SearchResult;
@@ -160,41 +160,21 @@ async fn search(
         ));
     }
 
-    let collection_addr_result = manager.send(GetCollectionAddr { name: name.clone() }).await;
+    let search_result = manager.send(SearchCollection {
+        collection_name: name.clone(),
+        column: req.column_name.clone(),
+        query: req.query.clone(),
+        limit,
+    }).await;
 
-    match collection_addr_result {
-        Ok(Ok(collection_addr)) => {
-            let model_id_result = manager.send(GetModelIdForCollection { name }).await;
-
-            match model_id_result {
-                Ok(Ok(model_id)) => {
-                    let search_result = collection_addr
-                        .send(SearchMsg {
-                            column: req.column_name.clone(),
-                            query: req.query.clone(),
-                            limit,
-                            model_id,
-                        })
-                        .await;
-
-                    match search_result {
-                        Ok(Ok(results)) => HttpResponse::Ok().json(SuccessResponse::new(
-                            SearchResultsResponse { results },
-                            start,
-                        )),
-                        _ => HttpResponse::InternalServerError()
-                            .json(ErrorResponse::new("Search failed".to_string(), start)),
-                    }
-                }
-                _ => HttpResponse::InternalServerError().json(ErrorResponse::new(
-                    "Failed to get model id".to_string(),
-                    start,
-                )),
-            }
-        }
+    match search_result {
+        Ok(Ok(results)) => HttpResponse::Ok().json(SuccessResponse::new(
+            SearchResultsResponse { results },
+            start,
+        )),
         Ok(Err(e)) => HttpResponse::NotFound().json(ErrorResponse::new(e.to_string(), start)),
         _ => HttpResponse::InternalServerError().json(ErrorResponse::new(
-            "Failed to find collection".to_string(),
+            "Search request to manager failed".to_string(),
             start,
         )),
     }

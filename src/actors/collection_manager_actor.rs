@@ -1,6 +1,6 @@
-use crate::actors::collection_actor::{CollectionActor, GetConfig};
+use crate::actors::collection_actor::{CollectionActor, GetConfig, Search as SearchMsg};
 use crate::actors::model_actor::{LoadModel, ModelManagerActor};
-use crate::collection::collection_utils::CollectionConfig;
+use crate::collection::collection_utils::{CollectionConfig, SearchResult};
 use crate::error::ProjectError;
 use actix::prelude::*;
 use std::collections::HashMap;
@@ -65,6 +65,15 @@ struct UpdateCollection {
 #[rtype(result = "Result<u32, ProjectError>")]
 pub struct GetModelIdForCollection {
     pub name: String,
+}
+
+#[derive(Message)]
+#[rtype(result = "Result<Vec<SearchResult>, ProjectError>")]
+pub struct SearchCollection {
+    pub collection_name: String,
+    pub column: String,
+    pub query: String,
+    pub limit: u32,
 }
 
 // ---- Message Handlers ----
@@ -218,6 +227,41 @@ impl Handler<GetModelIdForCollection> for CollectionManagerActor {
                 .get(&model_key)
                 .copied()
                 .ok_or_else(|| ProjectError::ModelNotFound(0)) // 0 is a placeholder
+        })
+    }
+}
+
+impl Handler<SearchCollection> for CollectionManagerActor {
+    type Result = ResponseFuture<Result<Vec<SearchResult>, ProjectError>>;
+
+    fn handle(&mut self, msg: SearchCollection, _ctx: &mut Context<Self>) -> Self::Result {
+        let collection_addr = match self.collections.get(&msg.collection_name) {
+            Some(addr) => addr.clone(),
+            None => {
+                return Box::pin(async move { Err(ProjectError::CollectionNotFound(msg.collection_name)) });
+            }
+        };
+
+        let model_lookup = self.model_lookup.clone();
+
+        Box::pin(async move {
+            let config = collection_addr.send(GetConfig).await??;
+            let model_key = (config.model_name, config.model_variant);
+            let model_id = model_lookup
+                .get(&model_key)
+                .copied()
+                .ok_or_else(|| ProjectError::ModelNotFound(0))?;
+
+            let search_results = collection_addr
+                .send(SearchMsg {
+                    column: msg.column,
+                    query: msg.query,
+                    limit: msg.limit,
+                    model_id,
+                })
+                .await??;
+
+            Ok(search_results)
         })
     }
 }
