@@ -2,11 +2,15 @@ extern crate letsearch;
 use criterion::{criterion_group, criterion_main, Criterion};
 
 use actix::prelude::*;
-use letsearch::actors::collection_actor::{EmbedColumn, ImportJsonl, ImportParquet};
+use letsearch::actors::collection_actor::ImportJsonl;
+#[cfg(feature = "heavyweight")]
+use letsearch::actors::collection_actor::{EmbedColumn, ImportParquet};
 use letsearch::actors::collection_manager_actor::{CollectionManagerActor, CreateCollection};
+#[cfg(feature = "heavyweight")]
+use letsearch::actors::collection_manager_actor::GetModelIdForCollection;
 use letsearch::actors::model_actor::ModelManagerActor;
 use letsearch::collection::collection_utils::CollectionConfig;
-use std::time::Duration;
+
 
 pub async fn import_jsonl(files: &str, collection_name: &str) -> anyhow::Result<()> {
     let mut config = CollectionConfig::default();
@@ -84,12 +88,11 @@ pub async fn embed_and_index(
 
     // Embed columns
     // We need to fetch the model_id
-    let model_id = letsearch::actors::model_actor::LoadModel {
-        path: model.to_string(),
-        variant: variant.to_string(),
-        token: None, // Used hf_token if any
-    };
-    let model_id = model_manager.send(model_id).await??;
+    let model_id = collection_manager
+        .send(GetModelIdForCollection {
+            name: collection_name.to_string(),
+        })
+        .await??;
 
     for column_name in index_columns {
         collection_addr
