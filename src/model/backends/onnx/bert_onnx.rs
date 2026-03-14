@@ -59,11 +59,13 @@ impl ModelTrait for BertONNX {
             pad_token: "<pad>".into(),
         }));
 
-        // TODO: instead of using a hardcoded index,
-        // use .filter to get the output tensor by name
+        // determine output index dynamically
+        let output_idx = session.outputs.iter().position(|o| o.name == "sentence_embedding").unwrap_or_else(|| {
+            if session.outputs.len() > 1 { 1 } else { 0 }
+        });
 
         // determine output dtype
-        let dtype = session.outputs[1]
+        let dtype = session.outputs[output_idx]
             .output_type
             .tensor_type()
             .unwrap()
@@ -77,7 +79,7 @@ impl ModelTrait for BertONNX {
         };
 
         // determine model output dimension
-        let dim = session.outputs[1]
+        let dim = session.outputs[output_idx]
             .output_type
             .tensor_dimensions()
             .unwrap()
