@@ -2,10 +2,12 @@ use crate::model::model_utils::{ModelOutputDType, ModelTrait, ONNXModelTrait};
 use anyhow;
 use half::f16;
 use log::info;
-use ndarray::{Array2, Ix2};
+use ndarray::Array2;
 #[cfg(feature = "cuda")]
 use ort::CUDAExecutionProvider;
-use ort::{CPUExecutionProvider, GraphOptimizationLevel, Session};
+use ort::session::builder::GraphOptimizationLevel;
+use ort::session::Session;
+use ort::value::Tensor;
 use rayon::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
@@ -16,25 +18,19 @@ use tokenizers::{PaddingParams, Tokenizer};
 static ORT_INIT: Once = Once::new();
 
 pub struct EncoderONNX {
-    pub model: Arc<Session>,
     pub tokenizer: Arc<Tokenizer>,
-    output_dtype: ModelOutputDType,
-    output_dim: i64,
-    needs_token_type_ids: bool,
+    pub model: Arc<std::sync::Mutex<Session>>,
+    pub needs_token_type_ids: bool,
+    pub output_dtype: ModelOutputDType,
+    pub output_dim: i64,
 }
 
 impl ModelTrait for EncoderONNX {
     fn new(model_dir: &str, model_file: &str) -> anyhow::Result<Self> {
         ORT_INIT.call_once(|| {
-            ort::init()
+            let _ = ort::init()
                 .with_name("onnx_model")
-                .with_execution_providers([
-                    #[cfg(feature = "cuda")]
-                    CUDAExecutionProvider::default().build(),
-                    CPUExecutionProvider::default().build(),
-                ])
-                .commit()
-                .expect("Failed to initialize ORT environment");
+                .commit();
         });
 
         let model_source_path = Path::new(model_dir);
@@ -62,14 +58,14 @@ impl ModelTrait for EncoderONNX {
 
         // determine output index dynamically
         let output_idx = session
-            .outputs
+            .outputs()
             .iter()
-            .position(|o| o.name == "sentence_embedding")
-            .unwrap_or_else(|| if session.outputs.len() > 1 { 1 } else { 0 });
+            .position(|o| o.name() == "sentence_embedding")
+            .unwrap_or_else(|| if session.outputs().len() > 1 { 1 } else { 0 });
 
         // determine output dtype
-        let dtype = session.outputs[output_idx]
-            .output_type
+        let dtype = session.outputs()[output_idx]
+            .dtype()
             .tensor_type()
             .ok_or_else(|| anyhow::anyhow!("Coult not determine output tensor type"))?
             .to_string();
@@ -82,9 +78,9 @@ impl ModelTrait for EncoderONNX {
         };
 
         // determine model output dimension
-        let dim = session.outputs[output_idx]
-            .output_type
-            .tensor_dimensions()
+        let dim = session.outputs()[output_idx]
+            .dtype()
+            .tensor_shape()
             .ok_or_else(|| anyhow::anyhow!("Coult not determine tensor dimensions"))?
             .last()
             .ok_or_else(|| anyhow::anyhow!("Tensor has no dimensions"))?
@@ -94,14 +90,14 @@ impl ModelTrait for EncoderONNX {
         // determine if the models needs token_type_ids
         let tti_name = "token_type_ids";
         let needs_token_type_ids = session
-            .inputs
-            .par_iter()
-            .map(|i| i.name.as_str())
+            .inputs()
+            .iter()
+            .map(|i| i.name())
             .collect::<Vec<&str>>()
             .contains(&tti_name);
 
         Ok(Self {
-            model: Arc::new(session),
+            model: Arc::new(std::sync::Mutex::new(session)),
             tokenizer: Arc::new(tokenizer),
             output_dim: dim,
             output_dtype: output_dtype,
@@ -123,7 +119,7 @@ impl ONNXModelTrait for EncoderONNX {
 
         let needs_token_type_ids = self.needs_token_type_ids;
 
-        let (a_ids, a_mask, a_t_ids) = {
+        let (ids, mask, a_t_ids, batch_len, token_len) = {
             // tokenize inputs
             let encodings = tokenizer
                 .encode_batch(inputs.clone(), true)
@@ -139,49 +135,52 @@ impl ONNXModelTrait for EncoderONNX {
                 .par_iter()
                 .flat_map_iter(|e| e.get_attention_mask().iter().map(|i| *i as i64))
                 .collect();
-            let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids)
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask)
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-
             let a_t_ids = if needs_token_type_ids {
                 let t_ids: Vec<i64> = encodings
                     .par_iter()
                     .flat_map_iter(|e| e.get_type_ids().iter().map(|i| *i as i64))
                     .collect();
-                Some(
-                    Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids)
-                        .map_err(|e| anyhow::anyhow!(e.to_string()))?,
-                )
+                Some(t_ids)
             } else {
                 None
             };
 
-            (a_ids, a_mask, a_t_ids)
+            (ids, mask, a_t_ids, inputs.len(), padded_token_length)
         };
 
         // Run the model.
 
         let embeddings_tensor = {
+            let shape = [batch_len, token_len];
+
+            let mut session_guard = model.lock().unwrap();
+
             let outputs = if let Some(a_t_ids) = a_t_ids {
-                model
-                    .run(
-                        ort::inputs![a_ids, a_t_ids, a_mask]
-                            .map_err(|e| anyhow::anyhow!(e.to_string()))?,
-                    )
+                session_guard
+                    .run(ort::inputs![
+                        "input_ids" => Tensor::from_array((shape, ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
+                        "token_type_ids" => Tensor::from_array((shape, a_t_ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
+                        "attention_mask" => Tensor::from_array((shape, mask.clone())).map_err(|e| anyhow::anyhow!(e.to_string()))?
+                    ])
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?
             } else {
-                model
-                    .run(ort::inputs![a_ids, a_mask].map_err(|e| anyhow::anyhow!(e.to_string()))?)
+                session_guard
+                    .run(ort::inputs![
+                        "input_ids" => Tensor::from_array((shape, ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
+                        "attention_mask" => Tensor::from_array((shape, mask.clone())).map_err(|e| anyhow::anyhow!(e.to_string()))?
+                    ])
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?
             };
 
             // Extract embeddings tensor.
-            let embeddings_tensor = outputs[1]
+            let (output_shape, output_data) = outputs[1]
                 .try_extract_tensor::<f16>()
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                .into_dimensionality::<Ix2>()
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let embeddings_tensor = ndarray::ArrayView2::from_shape(
+                (output_shape[0] as usize, output_shape[1] as usize),
+                output_data,
+            )
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
             embeddings_tensor.to_owned()
         };
@@ -201,7 +200,7 @@ impl ONNXModelTrait for EncoderONNX {
 
         let needs_token_type_ids = self.needs_token_type_ids;
 
-        let (a_ids, a_mask, a_t_ids) = {
+        let (ids, mask, a_t_ids, batch_len, token_len) = {
             // tokenize inputs
             let encodings = tokenizer
                 .encode_batch(inputs.clone(), true)
@@ -217,49 +216,52 @@ impl ONNXModelTrait for EncoderONNX {
                 .par_iter()
                 .flat_map_iter(|e| e.get_attention_mask().iter().map(|i| *i as i64))
                 .collect();
-            let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids)
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask)
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-
             let a_t_ids = if needs_token_type_ids {
                 let t_ids: Vec<i64> = encodings
                     .par_iter()
                     .flat_map_iter(|e| e.get_type_ids().iter().map(|i| *i as i64))
                     .collect();
-                Some(
-                    Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids)
-                        .map_err(|e| anyhow::anyhow!(e.to_string()))?,
-                )
+                Some(t_ids)
             } else {
                 None
             };
 
-            (a_ids, a_mask, a_t_ids)
+            (ids, mask, a_t_ids, inputs.len(), padded_token_length)
         };
 
         // Run the model.
 
         let embeddings_tensor = {
+            let shape = [batch_len, token_len];
+
+            let mut session_guard = model.lock().unwrap();
+
             let outputs = if let Some(a_t_ids) = a_t_ids {
-                model
-                    .run(
-                        ort::inputs![a_ids, a_t_ids, a_mask]
-                            .map_err(|e| anyhow::anyhow!(e.to_string()))?,
-                    )
+                session_guard
+                    .run(ort::inputs![
+                        "input_ids" => Tensor::from_array((shape, ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
+                        "token_type_ids" => Tensor::from_array((shape, a_t_ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
+                        "attention_mask" => Tensor::from_array((shape, mask.clone())).map_err(|e| anyhow::anyhow!(e.to_string()))?
+                    ])
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?
             } else {
-                model
-                    .run(ort::inputs![a_ids, a_mask].map_err(|e| anyhow::anyhow!(e.to_string()))?)
+                session_guard
+                    .run(ort::inputs![
+                        "input_ids" => Tensor::from_array((shape, ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
+                        "attention_mask" => Tensor::from_array((shape, mask.clone())).map_err(|e| anyhow::anyhow!(e.to_string()))?
+                    ])
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?
             };
 
             // Extract embeddings tensor.
-            let embeddings_tensor = outputs[1]
+            let (output_shape, output_data) = outputs[1]
                 .try_extract_tensor::<f32>()
-                .map_err(|e| anyhow::anyhow!(e.to_string()))?
-                .into_dimensionality::<Ix2>()
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let embeddings_tensor = ndarray::ArrayView2::from_shape(
+                (output_shape[0] as usize, output_shape[1] as usize),
+                output_data,
+            )
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
             embeddings_tensor.to_owned()
         };

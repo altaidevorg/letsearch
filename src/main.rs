@@ -4,13 +4,15 @@ use chrono;
 use clap::{Parser, Subcommand};
 use env_logger::fmt::Formatter;
 use letsearch::actors::collection_actor::{EmbedColumn, ImportJsonl, ImportParquet};
-use letsearch::actors::collection_manager_actor::{CollectionManagerActor, CreateCollection};
+use letsearch::actors::collection_manager_actor::{CollectionManagerActor, CreateCollection, LoadCollection, SearchCollection};
 use letsearch::actors::model_actor::{LoadModel, ModelManagerActor};
 use letsearch::collection::collection_utils::CollectionConfig;
 use letsearch::hf_ops::list_models;
 use letsearch::serve::run_server;
 use log::{info, Record};
 use std::io::Write;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::time::Duration;
 
 /// CLI application for indexing and searching documents
 #[derive(Parser, Debug)]
@@ -92,6 +94,29 @@ pub enum Commands {
     /// list models compatible with letsearch
     ListModels {
         /// HuggingFace Token. Only required to access private models
+        #[arg(long)]
+        hf_token: Option<String>,
+    },
+
+    /// Search queries natively in the terminal
+    Search {
+        /// collection to search
+        #[arg(short, long, required = true)]
+        collection_name: String,
+
+        /// target column to search against
+        #[arg(long, required = true)]
+        column: String,
+
+        /// your search query
+        #[arg(short, long, required = true)]
+        query: String,
+
+        /// limit the number of search results
+        #[arg(short, long, default_value = "10")]
+        limit: u32,
+
+        /// HuggingFace token. Only needed when you want to access private repos
         #[arg(long)]
         hf_token: Option<String>,
     },
@@ -203,6 +228,67 @@ async fn main() -> anyhow::Result<()> {
         Commands::ListModels { hf_token } => {
             let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
             list_models(token).await?;
+        }
+
+        Commands::Search {
+            collection_name,
+            column,
+            query,
+            limit,
+            hf_token,
+        } => {
+            let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
+
+            let progress_bar = ProgressBar::new_spinner();
+            progress_bar.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{spinner:.green} {msg}")
+                    .expect("Failed to set template")
+                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+            );
+            progress_bar.enable_steady_tick(Duration::from_millis(100));
+            progress_bar.set_message("Loading models and collection into memory...");
+
+            let model_manager_addr = ModelManagerActor::new().start();
+            let collection_manager_addr =
+                CollectionManagerActor::new(token.clone(), model_manager_addr.clone()).start();
+
+            let load_result = collection_manager_addr
+                .send(LoadCollection {
+                    name: collection_name.to_string(),
+                })
+                .await;
+
+            if let Err(e) = load_result.map_err(|e| anyhow::anyhow!(e)).and_then(|r| r.map_err(|e| anyhow::anyhow!(e))) {
+                progress_bar.finish_and_clear();
+                eprintln!("Failed to load collection '{}': {:?}", collection_name, e);
+                std::process::exit(1);
+            }
+
+            progress_bar.set_message("Searching...");
+
+            let search_result = collection_manager_addr
+                .send(SearchCollection {
+                    collection_name: collection_name.to_string(),
+                    column: column.to_string(),
+                    query: query.to_string(),
+                    limit: *limit,
+                })
+                .await;
+
+            progress_bar.finish_and_clear();
+
+            match search_result {
+                Ok(Ok(results)) => {
+                    println!("\nFound {} result(s) for query: '{}'\n", results.len(), query);
+                    for (i, result) in results.iter().enumerate() {
+                        println!("{}. [Score: {:.4}]", i + 1, result.score);
+                        println!("---\n{}\n---", result.content);
+                    }
+                }
+                Ok(Err(e)) => eprintln!("Search error: {:?}", e),
+                Err(e) => eprintln!("Execution error: {:?}", e),
+            }
         }
     }
 
