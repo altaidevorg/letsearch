@@ -5,12 +5,11 @@ use actix::prelude::*;
 use letsearch::actors::collection_actor::ImportJsonl;
 #[cfg(feature = "heavyweight")]
 use letsearch::actors::collection_actor::{EmbedColumn, ImportParquet};
-use letsearch::actors::collection_manager_actor::{CollectionManagerActor, CreateCollection};
 #[cfg(feature = "heavyweight")]
 use letsearch::actors::collection_manager_actor::GetModelIdForCollection;
+use letsearch::actors::collection_manager_actor::{CollectionManagerActor, CreateCollection};
 use letsearch::actors::model_actor::ModelManagerActor;
 use letsearch::collection::collection_utils::CollectionConfig;
-
 
 pub async fn import_jsonl(files: &str, collection_name: &str) -> anyhow::Result<()> {
     let mut config = CollectionConfig::default();

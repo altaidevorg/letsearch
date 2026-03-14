@@ -1,7 +1,7 @@
 use crate::actors::collection_actor::GetConfig;
 use crate::actors::collection_manager_actor::{
-    CollectionManagerActor, GetAllCollectionConfigs, GetCollectionAddr,
-    LoadCollection, SearchCollection
+    CollectionManagerActor, GetAllCollectionConfigs, GetCollectionAddr, LoadCollection,
+    SearchCollection,
 };
 use crate::actors::model_actor::ModelManagerActor;
 use crate::collection::collection_utils::SearchResult;
@@ -160,12 +160,14 @@ async fn search(
         ));
     }
 
-    let search_result = manager.send(SearchCollection {
-        collection_name: name.clone(),
-        column: req.column_name.clone(),
-        query: req.query.clone(),
-        limit,
-    }).await;
+    let search_result = manager
+        .send(SearchCollection {
+            collection_name: name.clone(),
+            column: req.column_name.clone(),
+            query: req.query.clone(),
+            limit,
+        })
+        .await;
 
     match search_result {
         Ok(Ok(results)) => HttpResponse::Ok().json(SuccessResponse::new(

@@ -238,7 +238,9 @@ impl Handler<SearchCollection> for CollectionManagerActor {
         let collection_addr = match self.collections.get(&msg.collection_name) {
             Some(addr) => addr.clone(),
             None => {
-                return Box::pin(async move { Err(ProjectError::CollectionNotFound(msg.collection_name)) });
+                return Box::pin(async move {
+                    Err(ProjectError::CollectionNotFound(msg.collection_name))
+                });
             }
         };
 
