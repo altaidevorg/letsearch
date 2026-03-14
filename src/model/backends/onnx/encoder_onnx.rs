@@ -149,7 +149,8 @@ impl ONNXModelTrait for EncoderONNX {
 
         let (ids, mask, a_t_ids, batch_len, token_len) = {
             // tokenize inputs
-            let encodings = self.tokenizer
+            let encodings = self
+                .tokenizer
                 .encode_batch(inputs.clone(), true)
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             let padded_token_length = encodings[0].len();
@@ -223,7 +224,8 @@ impl ONNXModelTrait for EncoderONNX {
 
         let (ids, mask, a_t_ids, batch_len, token_len) = {
             // tokenize inputs
-            let encodings = self.tokenizer
+            let encodings = self
+                .tokenizer
                 .encode_batch(inputs.clone(), true)
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             let padded_token_length = encodings[0].len();
