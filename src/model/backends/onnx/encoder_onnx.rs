@@ -15,7 +15,7 @@ use tokenizers::{PaddingParams, Tokenizer};
 
 static ORT_INIT: Once = Once::new();
 
-pub struct BertONNX {
+pub struct EncoderONNX {
     pub model: Arc<Session>,
     pub tokenizer: Arc<Tokenizer>,
     output_dtype: ModelOutputDType,
@@ -23,7 +23,7 @@ pub struct BertONNX {
     needs_token_type_ids: bool,
 }
 
-impl ModelTrait for BertONNX {
+impl ModelTrait for EncoderONNX {
     fn new(model_dir: &str, model_file: &str) -> anyhow::Result<Self> {
         ORT_INIT.call_once(|| {
             ort::init()
@@ -40,15 +40,15 @@ impl ModelTrait for BertONNX {
         let model_source_path = Path::new(model_dir);
 
         let session = Session::builder()
-            .unwrap()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?
             .with_optimization_level(GraphOptimizationLevel::Level3)
-            .unwrap()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?
             .with_intra_threads(available_parallelism()?.get())
-            .unwrap()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?
             .commit_from_file(model_source_path.join(model_file))
-            .unwrap();
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-        let mut tokenizer = Tokenizer::from_file(model_source_path.join("tokenizer.json")).unwrap();
+        let mut tokenizer = Tokenizer::from_file(model_source_path.join("tokenizer.json")).map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
         tokenizer.with_padding(Some(PaddingParams {
             strategy: tokenizers::PaddingStrategy::BatchLongest,
@@ -68,7 +68,7 @@ impl ModelTrait for BertONNX {
         let dtype = session.outputs[output_idx]
             .output_type
             .tensor_type()
-            .unwrap()
+            .ok_or_else(|| anyhow::anyhow!("Coult not determine output tensor type"))?
             .to_string();
         info!("Model output dtype: {:?}", dtype);
 
@@ -82,9 +82,9 @@ impl ModelTrait for BertONNX {
         let dim = session.outputs[output_idx]
             .output_type
             .tensor_dimensions()
-            .unwrap()
+            .ok_or_else(|| anyhow::anyhow!("Coult not determine tensor dimensions"))?
             .last()
-            .unwrap()
+            .ok_or_else(|| anyhow::anyhow!("Tensor has no dimensions"))?
             .to_owned();
         info!("Model output dim: {dim}");
 
@@ -107,7 +107,7 @@ impl ModelTrait for BertONNX {
     }
 }
 
-impl ONNXModelTrait for BertONNX {
+impl ONNXModelTrait for EncoderONNX {
     fn predict_f16(&self, texts: Vec<&str>) -> anyhow::Result<Arc<Array2<f16>>> {
         let output_dtype = self.output_dtype()?;
         assert_eq!(output_dtype, ModelOutputDType::F16);
@@ -122,7 +122,7 @@ impl ONNXModelTrait for BertONNX {
 
         let (a_ids, a_mask, a_t_ids) = {
             // tokenize inputs
-            let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
+            let encodings = tokenizer.encode_batch(inputs.clone(), true).map_err(|e| anyhow::anyhow!(e.to_string()))?;
             let padded_token_length = encodings[0].len();
 
             // Extract token IDs and attention masks
@@ -134,15 +134,15 @@ impl ONNXModelTrait for BertONNX {
                 .par_iter()
                 .flat_map_iter(|e| e.get_attention_mask().iter().map(|i| *i as i64))
                 .collect();
-            let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).unwrap();
-            let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask).unwrap();
+            let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask).map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
             let a_t_ids = if needs_token_type_ids {
                 let t_ids: Vec<i64> = encodings
                     .par_iter()
                     .flat_map_iter(|e| e.get_type_ids().iter().map(|i| *i as i64))
                     .collect();
-                Some(Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids).unwrap())
+                Some(Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids).map_err(|e| anyhow::anyhow!(e.to_string()))?)
             } else {
                 None
             };
@@ -155,18 +155,18 @@ impl ONNXModelTrait for BertONNX {
         let embeddings_tensor = {
             let outputs = if let Some(a_t_ids) = a_t_ids {
                 model
-                    .run(ort::inputs![a_ids, a_t_ids, a_mask].unwrap())
-                    .unwrap()
+                    .run(ort::inputs![a_ids, a_t_ids, a_mask].map_err(|e| anyhow::anyhow!(e.to_string()))?)
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?
             } else {
-                model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap()
+                model.run(ort::inputs![a_ids, a_mask].map_err(|e| anyhow::anyhow!(e.to_string()))?).map_err(|e| anyhow::anyhow!(e.to_string()))?
             };
 
             // Extract embeddings tensor.
             let embeddings_tensor = outputs[1]
                 .try_extract_tensor::<f16>()
-                .unwrap()
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?
                 .into_dimensionality::<Ix2>()
-                .unwrap();
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
             embeddings_tensor.to_owned()
         };
@@ -188,7 +188,7 @@ impl ONNXModelTrait for BertONNX {
 
         let (a_ids, a_mask, a_t_ids) = {
             // tokenize inputs
-            let encodings = tokenizer.encode_batch(inputs.clone(), true).unwrap();
+            let encodings = tokenizer.encode_batch(inputs.clone(), true).map_err(|e| anyhow::anyhow!(e.to_string()))?;
             let padded_token_length = encodings[0].len();
 
             // Extract token IDs and attention masks
@@ -200,15 +200,15 @@ impl ONNXModelTrait for BertONNX {
                 .par_iter()
                 .flat_map_iter(|e| e.get_attention_mask().iter().map(|i| *i as i64))
                 .collect();
-            let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).unwrap();
-            let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask).unwrap();
+            let a_ids = Array2::from_shape_vec([inputs.len(), padded_token_length], ids).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            let a_mask = Array2::from_shape_vec([inputs.len(), padded_token_length], mask).map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
             let a_t_ids = if needs_token_type_ids {
                 let t_ids: Vec<i64> = encodings
                     .par_iter()
                     .flat_map_iter(|e| e.get_type_ids().iter().map(|i| *i as i64))
                     .collect();
-                Some(Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids).unwrap())
+                Some(Array2::from_shape_vec([inputs.len(), padded_token_length], t_ids).map_err(|e| anyhow::anyhow!(e.to_string()))?)
             } else {
                 None
             };
@@ -221,18 +221,18 @@ impl ONNXModelTrait for BertONNX {
         let embeddings_tensor = {
             let outputs = if let Some(a_t_ids) = a_t_ids {
                 model
-                    .run(ort::inputs![a_ids, a_t_ids, a_mask].unwrap())
-                    .unwrap()
+                    .run(ort::inputs![a_ids, a_t_ids, a_mask].map_err(|e| anyhow::anyhow!(e.to_string()))?)
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?
             } else {
-                model.run(ort::inputs![a_ids, a_mask].unwrap()).unwrap()
+                model.run(ort::inputs![a_ids, a_mask].map_err(|e| anyhow::anyhow!(e.to_string()))?).map_err(|e| anyhow::anyhow!(e.to_string()))?
             };
 
             // Extract embeddings tensor.
             let embeddings_tensor = outputs[1]
                 .try_extract_tensor::<f32>()
-                .unwrap()
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?
                 .into_dimensionality::<Ix2>()
-                .unwrap();
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
             embeddings_tensor.to_owned()
         };

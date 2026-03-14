@@ -238,10 +238,18 @@ impl Handler<DbGetBatch> for CollectionDbActor {
         }
         let batch = &result[0];
 
-        let col_array = batch.column_by_name(&msg.column).unwrap().as_any().downcast_ref::<StringArray>().unwrap();
-        let col_values: Vec<String> = col_array.iter().map(|s| s.unwrap().to_string()).collect();
+        let col_array = batch.column_by_name(&msg.column)
+            .ok_or_else(|| ProjectError::Anyhow(anyhow!("Column '{}' not found", msg.column)))?
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .ok_or_else(|| ProjectError::Anyhow(anyhow!("Column is not of type String")))?;
+        let col_values: Vec<String> = col_array.iter().map(|s| s.unwrap_or_default().to_string()).collect();
 
-        let key_array = batch.column_by_name("_key").unwrap().as_any().downcast_ref::<PrimitiveArray<UInt64Type>>().unwrap();
+        let key_array = batch.column_by_name("_key")
+            .ok_or_else(|| ProjectError::Anyhow(anyhow!("_key column not found")))?
+            .as_any()
+            .downcast_ref::<PrimitiveArray<UInt64Type>>()
+            .ok_or_else(|| ProjectError::Anyhow(anyhow!("_key is not of type UInt64")))?;
         let keys: Vec<u64> = key_array.iter().map(|key| key.unwrap_or(0)).collect();
 
         Ok((col_values, keys))
@@ -502,7 +510,7 @@ impl Handler<EmbedColumn> for CollectionActor {
                 };
 
                 print!("\r{} / {} batches - ETA: {:?}", batch, total_steps, eta);
-                std::io::Write::flush(&mut std::io::stdout()).unwrap();
+                let _ = std::io::Write::flush(&mut std::io::stdout());
 
                 let offset = batch * batch_size;
 

@@ -210,8 +210,8 @@ pub async fn run_server(
         })
         .await;
 
-    if load_result.is_err() || load_result.unwrap().is_err() {
-        panic!("Failed to load initial collection.");
+    if let Err(e) = load_result.map_err(|e| anyhow::anyhow!(e)).and_then(|r| r.map_err(|e| anyhow::anyhow!(e))) {
+        panic!("Failed to load initial collection: {:?}", e);
     }
 
     let shared_manager_addr = web::Data::new(collection_manager_addr);

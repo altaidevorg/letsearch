@@ -1,1 +1,1 @@
-pub mod bert_onnx;
+pub mod encoder_onnx;

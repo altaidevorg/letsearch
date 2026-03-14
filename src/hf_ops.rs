@@ -83,7 +83,7 @@ async fn get_models(filter: &str, token: Option<String>) -> anyhow::Result<Vec<M
     let response = match token.as_ref() {
         Some(token) => client.get(&url).header(
             AUTHORIZATION,
-            HeaderValue::from_str(format!("BEARER {token}").as_str()).unwrap(),
+            HeaderValue::from_str(format!("BEARER {token}").as_str()).map_err(|e| anyhow::anyhow!("Invalid token formatting: {}", e))?,
         ),
         None => client.get(&url),
     }
@@ -122,7 +122,7 @@ async fn download_file(
     let response = match token.as_ref() {
         Some(token) => client.get(&url).header(
             AUTHORIZATION,
-            HeaderValue::from_str(format!("BEARER {token}").as_str()).unwrap(),
+            HeaderValue::from_str(format!("BEARER {token}").as_str()).map_err(|e| anyhow::anyhow!("Invalid token formatting: {}", e))?,
         ),
         None => client.get(&url),
     }
@@ -147,7 +147,7 @@ async fn download_file(
     let progress_bar = ProgressBar::new(total_size);
     progress_bar.set_style(
         ProgressStyle::with_template("[{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta})")
-            .unwrap()
+            .map_err(|e| anyhow::anyhow!("Invalid progress template: {}", e))?
             .progress_chars("#>-"),
     );
 
@@ -226,7 +226,7 @@ pub async fn download_model(
         for file_name in required_files {
             download_file(
                 repo_id.as_str(),
-                file_name.as_str().unwrap(),
+                file_name.as_str().ok_or_else(|| anyhow::anyhow!("File name is not a string"))?,
                 destination_dir.clone(),
                 token.clone(),
             )
@@ -236,15 +236,15 @@ pub async fn download_model(
 
     let model_dir = local_model_path
         .parent()
-        .unwrap()
+        .ok_or_else(|| anyhow::anyhow!("No parent directory"))?
         .to_str()
-        .unwrap()
+        .ok_or_else(|| anyhow::anyhow!("Invalid unicode path"))?
         .to_string();
     let model_file = local_model_path
         .file_name()
-        .unwrap()
+        .ok_or_else(|| anyhow::anyhow!("No file name"))?
         .to_str()
-        .unwrap()
+        .ok_or_else(|| anyhow::anyhow!("Invalid unicode path"))?
         .to_string();
 
     Ok((model_dir, model_file))

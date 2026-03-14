@@ -5,7 +5,7 @@ use log::info;
 
 use crate::error::ProjectError;
 use crate::model::model_utils::{Embeddings, ModelOutputDType, ONNXModel, ModelTrait};
-use crate::model::backends::onnx::bert_onnx::BertONNX;
+use crate::model::backends::onnx::encoder_onnx::EncoderONNX;
 use crate::hf_ops::download_model;
 
 // ---- Actor Definition ----
@@ -67,7 +67,7 @@ impl Handler<LoadModel> for ModelManagerActor {
             };
 
             let model: Arc<dyn ONNXModel> = Arc::new(
-                BertONNX::new(model_dir.as_str(), model_file.as_str())
+                EncoderONNX::new(model_dir.as_str(), model_file.as_str())
                     .map_err(|e| ProjectError::Anyhow(e))?
             );
             Ok(model)
