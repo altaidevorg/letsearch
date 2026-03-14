@@ -1,5 +1,4 @@
 use crate::model::model_utils::{ModelOutputDType, ModelTrait, ONNXModelTrait};
-use anyhow;
 use half::f16;
 use log::info;
 use ndarray::Array2;
@@ -101,7 +100,7 @@ impl ModelTrait for EncoderONNX {
         let dtype = session.outputs()[output_idx]
             .dtype()
             .tensor_type()
-            .ok_or_else(|| anyhow::anyhow!("Coult not determine output tensor type"))?
+            .ok_or_else(|| anyhow::anyhow!("Could not determine output tensor type"))?
             .to_string();
         info!("Model output dtype: {:?}", dtype);
 
@@ -115,7 +114,7 @@ impl ModelTrait for EncoderONNX {
         let dim = session.outputs()[output_idx]
             .dtype()
             .tensor_shape()
-            .ok_or_else(|| anyhow::anyhow!("Coult not determine tensor dimensions"))?
+            .ok_or_else(|| anyhow::anyhow!("Could not determine tensor dimensions"))?
             .last()
             .ok_or_else(|| anyhow::anyhow!("Tensor has no dimensions"))?
             .to_owned();
@@ -134,8 +133,8 @@ impl ModelTrait for EncoderONNX {
             model: Arc::new(SyncUnsafeSession::new(session)),
             tokenizer: Arc::new(tokenizer),
             output_dim: dim,
-            output_dtype: output_dtype,
-            needs_token_type_ids: needs_token_type_ids,
+            output_dtype,
+            needs_token_type_ids,
         })
     }
 }
@@ -146,16 +145,11 @@ impl ONNXModelTrait for EncoderONNX {
         assert_eq!(output_dtype, ModelOutputDType::F16);
 
         let inputs: Vec<String> = texts.par_iter().map(|s| s.to_string()).collect();
-
-        // Encode input strings.
-        let model = self.model.clone();
-        let tokenizer = self.tokenizer.clone();
-
         let needs_token_type_ids = self.needs_token_type_ids;
 
         let (ids, mask, a_t_ids, batch_len, token_len) = {
             // tokenize inputs
-            let encodings = tokenizer
+            let encodings = self.tokenizer
                 .encode_batch(inputs.clone(), true)
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             let padded_token_length = encodings[0].len();
@@ -186,8 +180,7 @@ impl ONNXModelTrait for EncoderONNX {
 
         let embeddings_tensor = {
             let shape = [batch_len, token_len];
-
-            let session = model.get_mut();
+            let session = self.model.get_mut();
 
             let outputs = if let Some(a_t_ids) = a_t_ids {
                 session
@@ -201,7 +194,7 @@ impl ONNXModelTrait for EncoderONNX {
                 session
                     .run(ort::inputs![
                         "input_ids" => Tensor::from_array((shape, ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
-                        "attention_mask" => Tensor::from_array((shape, mask.clone())).map_err(|e| anyhow::anyhow!(e.to_string()))?
+                        "attention_mask" => Tensor::from_array((shape, mask)).map_err(|e| anyhow::anyhow!(e.to_string()))?
                     ])
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?
             };
@@ -210,16 +203,15 @@ impl ONNXModelTrait for EncoderONNX {
             let (output_shape, output_data) = outputs[1]
                 .try_extract_tensor::<f16>()
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            let embeddings_tensor = ndarray::ArrayView2::from_shape(
+            ndarray::ArrayView2::from_shape(
                 (output_shape[0] as usize, output_shape[1] as usize),
                 output_data,
             )
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-
-            embeddings_tensor.to_owned()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?
+            .to_owned()
         };
 
-        Ok(Arc::new(embeddings_tensor.to_owned()))
+        Ok(Arc::new(embeddings_tensor))
     }
 
     fn predict_f32(&self, texts: Vec<&str>) -> anyhow::Result<Arc<Array2<f32>>> {
@@ -227,16 +219,11 @@ impl ONNXModelTrait for EncoderONNX {
         assert_eq!(output_dtype, ModelOutputDType::F32);
 
         let inputs: Vec<String> = texts.par_iter().map(|s| s.to_string()).collect();
-
-        // Encode input strings.
-        let model = self.model.clone();
-        let tokenizer = self.tokenizer.clone();
-
         let needs_token_type_ids = self.needs_token_type_ids;
 
         let (ids, mask, a_t_ids, batch_len, token_len) = {
             // tokenize inputs
-            let encodings = tokenizer
+            let encodings = self.tokenizer
                 .encode_batch(inputs.clone(), true)
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             let padded_token_length = encodings[0].len();
@@ -267,8 +254,7 @@ impl ONNXModelTrait for EncoderONNX {
 
         let embeddings_tensor = {
             let shape = [batch_len, token_len];
-
-            let session = model.get_mut();
+            let session = self.model.get_mut();
 
             let outputs = if let Some(a_t_ids) = a_t_ids {
                 session
@@ -282,7 +268,7 @@ impl ONNXModelTrait for EncoderONNX {
                 session
                     .run(ort::inputs![
                         "input_ids" => Tensor::from_array((shape, ids)).map_err(|e| anyhow::anyhow!(e.to_string()))?, 
-                        "attention_mask" => Tensor::from_array((shape, mask.clone())).map_err(|e| anyhow::anyhow!(e.to_string()))?
+                        "attention_mask" => Tensor::from_array((shape, mask)).map_err(|e| anyhow::anyhow!(e.to_string()))?
                     ])
                     .map_err(|e| anyhow::anyhow!(e.to_string()))?
             };
@@ -291,13 +277,12 @@ impl ONNXModelTrait for EncoderONNX {
             let (output_shape, output_data) = outputs[1]
                 .try_extract_tensor::<f32>()
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-            let embeddings_tensor = ndarray::ArrayView2::from_shape(
+            ndarray::ArrayView2::from_shape(
                 (output_shape[0] as usize, output_shape[1] as usize),
                 output_data,
             )
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-
-            embeddings_tensor.to_owned()
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?
+            .to_owned()
         };
 
         Ok(Arc::new(embeddings_tensor))
