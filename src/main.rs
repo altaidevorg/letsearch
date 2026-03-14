@@ -3,15 +3,17 @@ use anyhow;
 use chrono;
 use clap::{Parser, Subcommand};
 use env_logger::fmt::Formatter;
+use indicatif::{ProgressBar, ProgressStyle};
 use letsearch::actors::collection_actor::{EmbedColumn, ImportJsonl, ImportParquet};
-use letsearch::actors::collection_manager_actor::{CollectionManagerActor, CreateCollection, LoadCollection, SearchCollection};
+use letsearch::actors::collection_manager_actor::{
+    CollectionManagerActor, CreateCollection, LoadCollection, SearchCollection,
+};
 use letsearch::actors::model_actor::{LoadModel, ModelManagerActor};
 use letsearch::collection::collection_utils::CollectionConfig;
 use letsearch::hf_ops::list_models;
 use letsearch::serve::run_server;
 use log::{info, Record};
 use std::io::Write;
-use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 
 /// CLI application for indexing and searching documents
@@ -259,7 +261,10 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .await;
 
-            if let Err(e) = load_result.map_err(|e| anyhow::anyhow!(e)).and_then(|r| r.map_err(|e| anyhow::anyhow!(e))) {
+            if let Err(e) = load_result
+                .map_err(|e| anyhow::anyhow!(e))
+                .and_then(|r| r.map_err(|e| anyhow::anyhow!(e)))
+            {
                 progress_bar.finish_and_clear();
                 eprintln!("Failed to load collection '{}': {:?}", collection_name, e);
                 std::process::exit(1);
@@ -280,7 +285,11 @@ async fn main() -> anyhow::Result<()> {
 
             match search_result {
                 Ok(Ok(results)) => {
-                    println!("\nFound {} result(s) for query: '{}'\n", results.len(), query);
+                    println!(
+                        "\nFound {} result(s) for query: '{}'\n",
+                        results.len(),
+                        query
+                    );
                     for (i, result) in results.iter().enumerate() {
                         println!("{}. [Score: {:.4}]", i + 1, result.score);
                         println!("---\n{}\n---", result.content);

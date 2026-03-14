@@ -3,11 +3,11 @@ use anyhow;
 use half::f16;
 use log::info;
 use ndarray::Array2;
-#[cfg(feature = "cuda")]
-use ort::CUDAExecutionProvider;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::Tensor;
+#[cfg(feature = "cuda")]
+use ort::CUDAExecutionProvider;
 use rayon::prelude::*;
 use std::cell::UnsafeCell;
 use std::path::Path;
@@ -51,8 +51,6 @@ impl SyncUnsafeSession {
     fn get_mut(&self) -> &mut Session {
         unsafe { &mut *self.0.get() }
     }
-
-
 }
 
 pub struct EncoderONNX {
@@ -66,9 +64,7 @@ pub struct EncoderONNX {
 impl ModelTrait for EncoderONNX {
     fn new(model_dir: &str, model_file: &str) -> anyhow::Result<Self> {
         ORT_INIT.call_once(|| {
-            let _ = ort::init()
-                .with_name("onnx_model")
-                .commit();
+            let _ = ort::init().with_name("onnx_model").commit();
         });
 
         let model_source_path = Path::new(model_dir);
