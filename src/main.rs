@@ -1,13 +1,20 @@
+use actix::Actor;
 use anyhow;
 use chrono;
 use clap::{Parser, Subcommand};
 use env_logger::fmt::Formatter;
-use letsearch::collection::collection_manager::CollectionManager;
+use indicatif::{ProgressBar, ProgressStyle};
+use letsearch::actors::collection_actor::{EmbedColumn, ImportJsonl, ImportParquet};
+use letsearch::actors::collection_manager_actor::{
+    CollectionManagerActor, CreateCollection, LoadCollection, SearchCollection,
+};
+use letsearch::actors::model_actor::{LoadModel, ModelManagerActor};
 use letsearch::collection::collection_utils::CollectionConfig;
 use letsearch::hf_ops::list_models;
 use letsearch::serve::run_server;
 use log::{info, Record};
 use std::io::Write;
+use std::time::Duration;
 
 /// CLI application for indexing and searching documents
 #[derive(Parser, Debug)]
@@ -92,9 +99,32 @@ pub enum Commands {
         #[arg(long)]
         hf_token: Option<String>,
     },
+
+    /// Search queries natively in the terminal
+    Search {
+        /// collection to search
+        #[arg(short, long, required = true)]
+        collection_name: String,
+
+        /// target column to search against
+        #[arg(long, required = true)]
+        column: String,
+
+        /// your search query
+        #[arg(short, long, required = true)]
+        query: String,
+
+        /// limit the number of search results
+        #[arg(short, long, default_value = "10")]
+        limit: u32,
+
+        /// HuggingFace token. Only needed when you want to access private repos
+        #[arg(long)]
+        hf_token: Option<String>,
+    },
 }
 
-#[tokio::main]
+#[actix::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::builder()
         .format(|buf: &mut Formatter, record: &Record| {
@@ -129,39 +159,53 @@ async fn main() -> anyhow::Result<()> {
             config.model_name = model.to_string();
             config.model_variant = variant.to_string();
 
-            let token = if let Some(token) = hf_token {
-                Some(token.to_string())
-            } else {
-                if let Ok(token) = std::env::var("HF_TOKEN") {
-                    Some(token)
-                } else {
-                    None
-                }
-            };
+            let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
 
-            let collection_manager = CollectionManager::new(token);
-            collection_manager
-                .create_collection(config, overwrite.to_owned())
-                .await?;
+            let model_manager_addr = ModelManagerActor::new().start();
+            let collection_manager_addr =
+                CollectionManagerActor::new(token.clone(), model_manager_addr.clone()).start();
+
+            let collection_addr = collection_manager_addr
+                .send(CreateCollection {
+                    config,
+                    overwrite: *overwrite,
+                })
+                .await??;
             info!("Collection '{}' created", collection_name);
 
             if files.ends_with(".jsonl") {
-                collection_manager
-                    .import_jsonl(&collection_name, files)
-                    .await?;
+                collection_addr
+                    .send(ImportJsonl {
+                        path: files.to_string(),
+                    })
+                    .await??;
             } else if files.ends_with(".parquet") {
-                collection_manager
-                    .import_parquet(&collection_name, files)
-                    .await?;
+                collection_addr
+                    .send(ImportParquet {
+                        path: files.to_string(),
+                    })
+                    .await??;
             } else {
                 return Err(anyhow::anyhow!("This file is currently not supported"));
             }
 
             if !index_columns.is_empty() {
+                let model_id = model_manager_addr
+                    .send(LoadModel {
+                        path: model.to_string(),
+                        variant: variant.to_string(),
+                        token,
+                    })
+                    .await??;
+
                 for column_name in index_columns {
-                    collection_manager
-                        .embed_column(&collection_name, column_name, batch_size.to_owned())
-                        .await?;
+                    collection_addr
+                        .send(EmbedColumn {
+                            name: column_name.to_string(),
+                            batch_size: *batch_size,
+                            model_id,
+                        })
+                        .await??;
                 }
             }
         }
@@ -172,15 +216,7 @@ async fn main() -> anyhow::Result<()> {
             port,
             hf_token,
         } => {
-            let token = if let Some(token) = hf_token {
-                Some(token.to_string())
-            } else {
-                if let Ok(token) = std::env::var("HF_TOKEN") {
-                    Some(token)
-                } else {
-                    None
-                }
-            };
+            let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
 
             run_server(
                 host.to_string(),
@@ -192,16 +228,76 @@ async fn main() -> anyhow::Result<()> {
         }
 
         Commands::ListModels { hf_token } => {
-            let token = if let Some(token) = hf_token {
-                Some(token.to_string())
-            } else {
-                if let Ok(token) = std::env::var("HF_TOKEN") {
-                    Some(token)
-                } else {
-                    None
-                }
-            };
+            let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
             list_models(token).await?;
+        }
+
+        Commands::Search {
+            collection_name,
+            column,
+            query,
+            limit,
+            hf_token,
+        } => {
+            let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
+
+            let progress_bar = ProgressBar::new_spinner();
+            progress_bar.set_style(
+                ProgressStyle::default_spinner()
+                    .template("{spinner:.green} {msg}")
+                    .expect("Failed to set template")
+                    .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+            );
+            progress_bar.enable_steady_tick(Duration::from_millis(100));
+            progress_bar.set_message("Loading models and collection into memory...");
+
+            let model_manager_addr = ModelManagerActor::new().start();
+            let collection_manager_addr =
+                CollectionManagerActor::new(token.clone(), model_manager_addr.clone()).start();
+
+            let load_result = collection_manager_addr
+                .send(LoadCollection {
+                    name: collection_name.to_string(),
+                })
+                .await;
+
+            if let Err(e) = load_result
+                .map_err(|e| anyhow::anyhow!(e))
+                .and_then(|r| r.map_err(|e| anyhow::anyhow!(e)))
+            {
+                progress_bar.finish_and_clear();
+                eprintln!("Failed to load collection '{}': {:?}", collection_name, e);
+                std::process::exit(1);
+            }
+
+            progress_bar.set_message("Searching...");
+
+            let search_result = collection_manager_addr
+                .send(SearchCollection {
+                    collection_name: collection_name.to_string(),
+                    column: column.to_string(),
+                    query: query.to_string(),
+                    limit: *limit,
+                })
+                .await;
+
+            progress_bar.finish_and_clear();
+
+            match search_result {
+                Ok(Ok(results)) => {
+                    println!(
+                        "\nFound {} result(s) for query: '{}'\n",
+                        results.len(),
+                        query
+                    );
+                    for (i, result) in results.iter().enumerate() {
+                        println!("{}. [Score: {:.4}]", i + 1, result.score);
+                        println!("---\n{}\n---", result.content);
+                    }
+                }
+                Ok(Err(e)) => eprintln!("Search error: {:?}", e),
+                Err(e) => eprintln!("Execution error: {:?}", e),
+            }
         }
     }
 

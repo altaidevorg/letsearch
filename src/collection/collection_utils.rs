@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fs::File;
 use std::path::PathBuf;
 
 const DEFAULT_HOME_DIR: &str = ".letsearch";
@@ -66,6 +67,14 @@ impl CollectionConfig {
             index_dir: default_index_dir(),
             serialization_version: default_serialization_version(),
         }
+    }
+
+    pub fn from_file(name: &str) -> anyhow::Result<Self> {
+        let collection_dir = home_dir().join("collections").join(name);
+        let config_path = collection_dir.join("config.json");
+        let config_file = File::open(config_path)?;
+        let config: CollectionConfig = serde_json::from_reader(config_file)?;
+        Ok(config)
     }
 }
 

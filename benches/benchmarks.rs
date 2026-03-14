@@ -1,27 +1,42 @@
 extern crate letsearch;
-use anyhow;
 use criterion::{criterion_group, criterion_main, Criterion};
-use letsearch::collection::collection_type::Collection;
-use letsearch::collection::collection_utils::CollectionConfig;
 
+use actix::prelude::*;
+use letsearch::actors::collection_actor::ImportJsonl;
 #[cfg(feature = "heavyweight")]
-use letsearch::collection::collection_manager::CollectionManager;
-
-use tokio::runtime::Runtime;
+use letsearch::actors::collection_actor::{EmbedColumn, ImportParquet};
+#[cfg(feature = "heavyweight")]
+use letsearch::actors::collection_manager_actor::GetModelIdForCollection;
+use letsearch::actors::collection_manager_actor::{CollectionManagerActor, CreateCollection};
+use letsearch::actors::model_actor::ModelManagerActor;
+use letsearch::collection::collection_utils::CollectionConfig;
 
 pub async fn import_jsonl(files: &str, collection_name: &str) -> anyhow::Result<()> {
     let mut config = CollectionConfig::default();
     config.name = collection_name.to_string();
 
-    let collection = Collection::new(config, true).await?;
-    collection.import_jsonl(files).await?;
+    let model_manager = ModelManagerActor::new().start();
+    let collection_manager = CollectionManagerActor::new(None, model_manager).start();
+
+    let collection_addr = collection_manager
+        .send(CreateCollection {
+            config,
+            overwrite: true,
+        })
+        .await??;
+
+    collection_addr
+        .send(ImportJsonl {
+            path: files.to_string(),
+        })
+        .await??;
     Ok(())
 }
 
 fn benchmark_import_jsonl(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
+    let runner = tokio::runtime::Runtime::new().unwrap();
     c.bench_function("import_jsonl", |b| {
-        b.to_async(&rt).iter(|| async {
+        b.to_async(&runner).iter(|| async {
             let files = "./benches/rag_instruct_benchmark_tester.jsonl";
             let collection_name = "test_collection";
 
@@ -46,30 +61,55 @@ pub async fn embed_and_index(
     config.model_name = model.to_string();
     config.model_variant = variant.to_string();
 
-    let collection_manager = CollectionManager::new(hf_token);
-    collection_manager.create_collection(config, true).await?;
+    let model_manager = ModelManagerActor::new().start();
+    let collection_manager = CollectionManagerActor::new(hf_token, model_manager.clone()).start();
+
+    let collection_addr = collection_manager
+        .send(CreateCollection {
+            config,
+            overwrite: true,
+        })
+        .await??;
+
     if files.ends_with(".jsonl") {
-        collection_manager
-            .import_jsonl(collection_name, files)
-            .await?;
+        collection_addr
+            .send(ImportJsonl {
+                path: files.to_string(),
+            })
+            .await??;
     } else if files.ends_with(".parquet") {
-        collection_manager
-            .import_parquet(collection_name, files)
-            .await?;
+        collection_addr
+            .send(ImportParquet {
+                path: files.to_string(),
+            })
+            .await??;
     }
+
+    // Embed columns
+    // We need to fetch the model_id
+    let model_id = collection_manager
+        .send(GetModelIdForCollection {
+            name: collection_name.to_string(),
+        })
+        .await??;
+
     for column_name in index_columns {
-        collection_manager
-            .embed_column(collection_name, column_name, batch_size)
-            .await?;
+        collection_addr
+            .send(EmbedColumn {
+                name: column_name.clone(),
+                batch_size,
+                model_id,
+            })
+            .await??;
     }
     Ok(())
 }
 
 #[cfg(feature = "heavyweight")]
 fn benchmark_pipeline(c: &mut Criterion) {
-    let rt = Runtime::new().unwrap();
+    let runner = tokio::runtime::Runtime::new().unwrap();
     c.bench_function("embed_and_index", |b| {
-        b.to_async(&rt).iter(|| async {
+        b.to_async(&runner).iter(|| async {
             let files = "./benches/rag_instruct_benchmark_tester.jsonl";
             let collection_name = "test_collection";
             let model = "hf://mys/minilm";

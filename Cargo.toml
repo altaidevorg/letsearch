@@ -24,6 +24,8 @@ usearch = "2.16.6"
 indicatif = "0.17.9"
 reqwest = { version = "0.12.9", features = ["json", "stream"] }
 futures = "0.3.31"
+actix = "0.13"
+thiserror = "1.0"
 criterion = {version = "0.5.1", features = ["async_tokio"]}
 
 [[bench]]
