@@ -48,6 +48,8 @@ pub enum Commands {
 
         /// Model to create embeddings.
         /// You can also give a hf:// path and it will be automatically  downloaded.
+        /// Use gemini://<model-name> (e.g. gemini://gemini-embedding-2-preview) to use
+        /// a Gemini embedding model via the Google AI API.
         #[arg(short, long, default_value = "hf://mys/minilm")]
         model: String,
 
@@ -58,6 +60,11 @@ pub enum Commands {
         /// HuggingFace token. Only needed when you want to access private repos
         #[arg(long)]
         hf_token: Option<String>,
+
+        /// Gemini API key. Required when using a gemini:// model.
+        /// Falls back to the GEMINI_API_KEY environment variable when not provided.
+        #[arg(long)]
+        gemini_api_key: Option<String>,
 
         /// batch size when embedding texts
         #[arg(short, long, default_value = "32")]
@@ -91,6 +98,11 @@ pub enum Commands {
         /// HuggingFace token. Only needed when you want to access private repos
         #[arg(long)]
         hf_token: Option<String>,
+
+        /// Gemini API key. Required when the collection uses a gemini:// model.
+        /// Falls back to the GEMINI_API_KEY environment variable when not provided.
+        #[arg(long)]
+        gemini_api_key: Option<String>,
     },
 
     /// list models compatible with letsearch
@@ -121,6 +133,11 @@ pub enum Commands {
         /// HuggingFace token. Only needed when you want to access private repos
         #[arg(long)]
         hf_token: Option<String>,
+
+        /// Gemini API key. Required when the collection uses a gemini:// model.
+        /// Falls back to the GEMINI_API_KEY environment variable when not provided.
+        #[arg(long)]
+        gemini_api_key: Option<String>,
     },
 }
 
@@ -149,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
             model,
             variant,
             hf_token,
+            gemini_api_key,
             batch_size,
             index_columns,
             overwrite,
@@ -160,10 +178,13 @@ async fn main() -> anyhow::Result<()> {
             config.model_variant = variant.to_string();
 
             let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
+            let gemini_key = gemini_api_key
+                .clone()
+                .or_else(|| std::env::var("GEMINI_API_KEY").ok());
 
             let model_manager_addr = ModelManagerActor::new().start();
             let collection_manager_addr =
-                CollectionManagerActor::new(token.clone(), model_manager_addr.clone()).start();
+                CollectionManagerActor::new(token.clone(), model_manager_addr.clone(), gemini_key.clone()).start();
 
             let collection_addr = collection_manager_addr
                 .send(CreateCollection {
@@ -195,6 +216,7 @@ async fn main() -> anyhow::Result<()> {
                         path: model.to_string(),
                         variant: variant.to_string(),
                         token,
+                        gemini_api_key: gemini_key,
                     })
                     .await??;
 
@@ -215,14 +237,19 @@ async fn main() -> anyhow::Result<()> {
             host,
             port,
             hf_token,
+            gemini_api_key,
         } => {
             let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
+            let gemini_key = gemini_api_key
+                .clone()
+                .or_else(|| std::env::var("GEMINI_API_KEY").ok());
 
             run_server(
                 host.to_string(),
                 port.to_owned(),
                 collection_name.to_string(),
                 token,
+                gemini_key,
             )
             .await?;
         }
@@ -238,8 +265,12 @@ async fn main() -> anyhow::Result<()> {
             query,
             limit,
             hf_token,
+            gemini_api_key,
         } => {
             let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
+            let gemini_key = gemini_api_key
+                .clone()
+                .or_else(|| std::env::var("GEMINI_API_KEY").ok());
 
             let progress_bar = ProgressBar::new_spinner();
             progress_bar.set_style(
@@ -253,7 +284,7 @@ async fn main() -> anyhow::Result<()> {
 
             let model_manager_addr = ModelManagerActor::new().start();
             let collection_manager_addr =
-                CollectionManagerActor::new(token.clone(), model_manager_addr.clone()).start();
+                CollectionManagerActor::new(token.clone(), model_manager_addr.clone(), gemini_key).start();
 
             let load_result = collection_manager_addr
                 .send(LoadCollection {

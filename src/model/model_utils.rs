@@ -1,10 +1,12 @@
 use anyhow;
+use async_trait::async_trait;
 use half::f16;
 use ndarray::Array2;
 use std::sync::Arc;
 
 pub enum Backend {
     ONNX,
+    Gemini,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -18,6 +20,14 @@ pub enum ModelOutputDType {
 pub enum Embeddings {
     F16(Arc<Array2<f16>>),
     F32(Arc<Array2<f32>>),
+}
+
+/// General async embedding trait implemented by all model backends.
+#[async_trait]
+pub trait Embedder: Send + Sync {
+    fn output_dim(&self) -> anyhow::Result<i64>;
+    fn output_dtype(&self) -> anyhow::Result<ModelOutputDType>;
+    async fn embed(&self, texts: Vec<String>) -> anyhow::Result<Embeddings>;
 }
 
 pub trait ModelTrait {

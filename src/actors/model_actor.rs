@@ -5,13 +5,14 @@ use std::sync::Arc;
 
 use crate::error::ProjectError;
 use crate::hf_ops::download_model;
+use crate::model::backends::gemini::gemini_embedder::GeminiEmbedder;
 use crate::model::backends::onnx::encoder_onnx::EncoderONNX;
-use crate::model::model_utils::{Embeddings, ModelOutputDType, ModelTrait, ONNXModel};
+use crate::model::model_utils::{Embedder, Embeddings, ModelOutputDType, ModelTrait};
 
 // ---- Actor Definition ----
 #[derive(Clone)]
 pub struct ModelManagerActor {
-    models: HashMap<u32, Arc<dyn ONNXModel>>,
+    models: HashMap<u32, Arc<dyn Embedder>>,
     next_id: u32,
 }
 
@@ -35,6 +36,9 @@ pub struct LoadModel {
     pub path: String,
     pub variant: String,
     pub token: Option<String>,
+    /// Gemini API key. Required when `path` starts with `gemini://`.
+    /// Falls back to the `GEMINI_API_KEY` environment variable when `None`.
+    pub gemini_api_key: Option<String>,
 }
 
 #[derive(Message)]
@@ -58,18 +62,37 @@ impl Handler<LoadModel> for ModelManagerActor {
         let model_path = msg.path.clone();
 
         let fut = async move {
-            let (model_dir, model_file) = if msg.path.starts_with("hf://") {
-                download_model(msg.path, msg.variant, msg.token)
-                    .await
-                    .map_err(|e| ProjectError::Anyhow(e))?
+            let model: Arc<dyn Embedder> = if msg.path.starts_with("gemini://") {
+                let model_name = msg.path
+                    .strip_prefix("gemini://")
+                    .unwrap();
+
+                let api_key = msg
+                    .gemini_api_key
+                    .or_else(|| std::env::var("GEMINI_API_KEY").ok())
+                    .ok_or_else(|| {
+                        ProjectError::Anyhow(anyhow::anyhow!(
+                            "Gemini API key not provided. \
+                             Pass --gemini-api-key or set the GEMINI_API_KEY environment variable."
+                        ))
+                    })?;
+
+                Arc::new(GeminiEmbedder::new(&model_name, &api_key, None))
             } else {
-                (msg.path, msg.variant)
+                let (model_dir, model_file) = if msg.path.starts_with("hf://") {
+                    download_model(msg.path, msg.variant, msg.token)
+                        .await
+                        .map_err(|e| ProjectError::Anyhow(e))?
+                } else {
+                    (msg.path, msg.variant)
+                };
+
+                Arc::new(
+                    EncoderONNX::new(model_dir.as_str(), model_file.as_str())
+                        .map_err(|e| ProjectError::Anyhow(e))?,
+                )
             };
 
-            let model: Arc<dyn ONNXModel> = Arc::new(
-                EncoderONNX::new(model_dir.as_str(), model_file.as_str())
-                    .map_err(|e| ProjectError::Anyhow(e))?,
-            );
             Ok(model)
         };
 
@@ -98,32 +121,10 @@ impl Handler<Predict> for ModelManagerActor {
         };
 
         Box::pin(async move {
-            // Calculate embeddings in a blocking task since it's CPU-bound
-            tokio::task::spawn_blocking(move || -> Result<Embeddings, ProjectError> {
-                let dtype = model.output_dtype().map_err(|e| ProjectError::Anyhow(e))?;
-
-                let texts_str: Vec<&str> = msg.texts.iter().map(|s| s.as_str()).collect();
-
-                match dtype {
-                    ModelOutputDType::F16 => {
-                        let result = model
-                            .predict_f16(texts_str)
-                            .map_err(|e| ProjectError::Anyhow(e))?;
-                        Ok(Embeddings::F16(result))
-                    }
-                    ModelOutputDType::F32 => {
-                        let result = model
-                            .predict_f32(texts_str)
-                            .map_err(|e| ProjectError::Anyhow(e))?;
-                        Ok(Embeddings::F32(result))
-                    }
-                    ModelOutputDType::Int8 => {
-                        unimplemented!("int8 dynamic quantization not yet implemented")
-                    }
-                }
-            })
-            .await
-            .map_err(|e| ProjectError::Anyhow(anyhow::anyhow!("Spawn blocking error: {}", e)))?
+            model
+                .embed(msg.texts)
+                .await
+                .map_err(|e| ProjectError::Anyhow(e))
         })
     }
 }
@@ -143,3 +144,4 @@ impl Handler<GetModelMetadata> for ModelManagerActor {
         Ok((dim, dtype))
     }
 }
+

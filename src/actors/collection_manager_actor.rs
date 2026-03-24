@@ -11,15 +11,21 @@ pub struct CollectionManagerActor {
     model_manager: Addr<ModelManagerActor>,
     model_lookup: HashMap<(String, String), u32>,
     hf_token: Option<String>,
+    gemini_api_key: Option<String>,
 }
 
 impl CollectionManagerActor {
-    pub fn new(hf_token: Option<String>, model_manager: Addr<ModelManagerActor>) -> Self {
+    pub fn new(
+        hf_token: Option<String>,
+        model_manager: Addr<ModelManagerActor>,
+        gemini_api_key: Option<String>,
+    ) -> Self {
         Self {
             collections: HashMap::new(),
             model_manager,
             model_lookup: HashMap::new(),
             hf_token,
+            gemini_api_key,
         }
     }
 }
@@ -142,6 +148,7 @@ impl Handler<CreateCollection> for CollectionManagerActor {
             msg.config.model_variant.clone(),
         );
         let hf_token = self.hf_token.clone();
+        let gemini_api_key = self.gemini_api_key.clone();
         let self_addr = ctx.address();
 
         Box::pin(async move {
@@ -150,6 +157,7 @@ impl Handler<CreateCollection> for CollectionManagerActor {
                     path: model_key.0.clone(),
                     variant: model_key.1.clone(),
                     token: hf_token,
+                    gemini_api_key,
                 })
                 .await??;
 
@@ -179,6 +187,7 @@ impl Handler<LoadCollection> for CollectionManagerActor {
         let model_manager = self.model_manager.clone();
         let name = msg.name.clone();
         let hf_token = self.hf_token.clone();
+        let gemini_api_key = self.gemini_api_key.clone();
         let self_addr = ctx.address();
 
         Box::pin(async move {
@@ -189,6 +198,7 @@ impl Handler<LoadCollection> for CollectionManagerActor {
                     path: model_key.0.clone(),
                     variant: model_key.1.clone(),
                     token: hf_token,
+                    gemini_api_key,
                 })
                 .await??;
 

@@ -16,7 +16,7 @@ pub async fn import_jsonl(files: &str, collection_name: &str) -> anyhow::Result<
     config.name = collection_name.to_string();
 
     let model_manager = ModelManagerActor::new().start();
-    let collection_manager = CollectionManagerActor::new(None, model_manager).start();
+    let collection_manager = CollectionManagerActor::new(None, model_manager, None).start();
 
     let collection_addr = collection_manager
         .send(CreateCollection {
@@ -62,7 +62,7 @@ pub async fn embed_and_index(
     config.model_variant = variant.to_string();
 
     let model_manager = ModelManagerActor::new().start();
-    let collection_manager = CollectionManagerActor::new(hf_token, model_manager.clone()).start();
+    let collection_manager = CollectionManagerActor::new(hf_token, model_manager.clone(), None).start();
 
     let collection_addr = collection_manager
         .send(CreateCollection {
