@@ -27,6 +27,8 @@ futures = "0.3.31"
 actix = "0.13"
 thiserror = "1.0"
 criterion = {version = "0.5.1", features = ["async_tokio"]}
+pdf_oxide = "0.3.17"
+tokie = "0.0.5"
 
 [[bench]]
 name = "benchmarks"

@@ -10,6 +10,7 @@ use usearch::f16 as UsearchF16;
 use usearch::{IndexOptions, MetricKind, ScalarKind};
 
 use crate::actors::model_actor::{GetModelMetadata, ModelManagerActor, Predict};
+use crate::chunker::ChunkerConfig;
 use crate::collection::collection_utils::{home_dir, CollectionConfig, SearchResult};
 use crate::collection::vector_index::VectorIndex;
 use crate::error::ProjectError;
@@ -27,6 +28,37 @@ pub struct DbImportJsonl {
 #[rtype(result = "Result<(), ProjectError>")]
 pub struct DbImportParquet {
     pub path: String,
+}
+
+/// Append rows from a JSONL file to an existing table.
+#[derive(Message)]
+#[rtype(result = "Result<(), ProjectError>")]
+pub struct DbAppendJsonl {
+    pub path: String,
+}
+
+/// Append rows from a Parquet file to an existing table.
+#[derive(Message)]
+#[rtype(result = "Result<(), ProjectError>")]
+pub struct DbAppendParquet {
+    pub path: String,
+}
+
+/// Insert a list of text chunks into the named column of the collection table.
+/// Creates the table and/or column if they do not yet exist.
+#[derive(Message)]
+#[rtype(result = "Result<(), ProjectError>")]
+pub struct DbImportMarkdownChunks {
+    pub chunks: Vec<String>,
+    pub column: String,
+}
+
+/// Return the number of vectors currently stored in the index for `column`.
+/// Returns 0 when no index has been created yet.
+#[derive(Message)]
+#[rtype(result = "Result<u64, ProjectError>")]
+pub struct DbGetIndexedCount {
+    pub column: String,
 }
 
 #[derive(Message)]
@@ -173,6 +205,153 @@ impl Handler<DbImportParquet> for CollectionDbActor {
         }
         tx.commit()?;
         Ok(())
+    }
+}
+
+impl Handler<DbAppendJsonl> for CollectionDbActor {
+    type Result = Result<(), ProjectError>;
+
+    fn handle(&mut self, msg: DbAppendJsonl, _ctx: &mut SyncContext<Self>) -> Self::Result {
+        let tx = self.conn.transaction()?;
+
+        // Discover all columns except _key so the DEFAULT on _key is used.
+        let cols_query = format!(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_name = '{}' AND column_name != '_key' \
+             ORDER BY ordinal_position;",
+            self.config.name
+        );
+        let mut stmt = tx.prepare(&cols_query)?;
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if cols.is_empty() {
+            return Err(ProjectError::Anyhow(anyhow!(
+                "Table '{}' has no columns to append to",
+                self.config.name
+            )));
+        }
+        let col_list = cols.join(", ");
+        tx.execute_batch(&format!(
+            "INSERT INTO {} ({}) SELECT {} FROM read_json_auto('{}');",
+            self.config.name, col_list, col_list, msg.path
+        ))?;
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+impl Handler<DbAppendParquet> for CollectionDbActor {
+    type Result = Result<(), ProjectError>;
+
+    fn handle(&mut self, msg: DbAppendParquet, _ctx: &mut SyncContext<Self>) -> Self::Result {
+        let tx = self.conn.transaction()?;
+
+        let cols_query = format!(
+            "SELECT column_name FROM information_schema.columns \
+             WHERE table_name = '{}' AND column_name != '_key' \
+             ORDER BY ordinal_position;",
+            self.config.name
+        );
+        let mut stmt = tx.prepare(&cols_query)?;
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if cols.is_empty() {
+            return Err(ProjectError::Anyhow(anyhow!(
+                "Table '{}' has no columns to append to",
+                self.config.name
+            )));
+        }
+        let col_list = cols.join(", ");
+        tx.execute_batch(&format!(
+            "INSERT INTO {} ({}) SELECT {} FROM read_parquet('{}');",
+            self.config.name, col_list, col_list, msg.path
+        ))?;
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+impl Handler<DbImportMarkdownChunks> for CollectionDbActor {
+    type Result = Result<(), ProjectError>;
+
+    fn handle(
+        &mut self,
+        msg: DbImportMarkdownChunks,
+        _ctx: &mut SyncContext<Self>,
+    ) -> Self::Result {
+        if msg.chunks.is_empty() {
+            return Ok(());
+        }
+
+        let tx = self.conn.transaction()?;
+
+        // Check whether the table already exists.
+        let table_exists: i64 = {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = '{}';",
+                self.config.name
+            ))?;
+            stmt.query_row([], |row| row.get(0))?
+        };
+
+        if table_exists == 0 {
+            // First import — create table with just the text column plus _key.
+            tx.execute_batch(&format!(
+                "CREATE TABLE {table} ({col} VARCHAR); \
+                 CREATE SEQUENCE keys_seq; \
+                 ALTER TABLE {table} ADD COLUMN _key UBIGINT DEFAULT NEXTVAL('keys_seq');",
+                table = self.config.name,
+                col = msg.column,
+            ))?;
+        } else {
+            // Table exists — ensure the target column is present.
+            let col_exists: i64 = {
+                let mut stmt = tx.prepare(&format!(
+                    "SELECT COUNT(*) FROM information_schema.columns \
+                     WHERE table_name = '{}' AND column_name = '{}';",
+                    self.config.name, msg.column
+                ))?;
+                stmt.query_row([], |row| row.get(0))?
+            };
+            if col_exists == 0 {
+                tx.execute_batch(&format!(
+                    "ALTER TABLE {} ADD COLUMN {} VARCHAR;",
+                    self.config.name, msg.column
+                ))?;
+            }
+        }
+
+        // Insert each chunk using a parameterised statement.
+        let insert_sql = format!(
+            "INSERT INTO {} ({}) VALUES (?);",
+            self.config.name, msg.column
+        );
+        let mut stmt = tx.prepare(&insert_sql)?;
+        for chunk in &msg.chunks {
+            stmt.execute(duckdb::params![chunk.as_str()])?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+impl Handler<DbGetIndexedCount> for CollectionDbActor {
+    type Result = Result<u64, ProjectError>;
+
+    fn handle(&mut self, msg: DbGetIndexedCount, _ctx: &mut SyncContext<Self>) -> Self::Result {
+        if let Some(index) = self.vector_indices.get(&msg.column) {
+            if let Some(idx) = &index.index {
+                return Ok(idx.size() as u64);
+            }
+        }
+        Ok(0)
     }
 }
 
@@ -442,6 +621,34 @@ pub struct Search {
 #[rtype(result = "Result<CollectionConfig, ProjectError>")]
 pub struct GetConfig;
 
+/// Append rows from a JSONL file to an existing collection table.
+#[derive(Message)]
+#[rtype(result = "Result<(), ProjectError>")]
+pub struct AppendJsonl {
+    pub path: String,
+}
+
+/// Append rows from a Parquet file to an existing collection table.
+#[derive(Message)]
+#[rtype(result = "Result<(), ProjectError>")]
+pub struct AppendParquet {
+    pub path: String,
+}
+
+/// Import a PDF document: convert to Markdown, optionally chunk it, and
+/// insert the resulting chunks into the named column of the collection table.
+#[derive(Message)]
+#[rtype(result = "Result<(), ProjectError>")]
+pub struct ImportPdf {
+    /// Path to the PDF file.
+    pub path: String,
+    /// Target column name (e.g. `"text"`).
+    pub column: String,
+    /// Optional chunker configuration.  When `None` the full Markdown string
+    /// is inserted as a single row.
+    pub chunker_config: Option<ChunkerConfig>,
+}
+
 // ---- Message Handlers ----
 
 impl Handler<ImportJsonl> for CollectionActor {
@@ -463,6 +670,62 @@ impl Handler<ImportParquet> for CollectionActor {
         let db_actor = self.db_actor.clone();
         Box::pin(async move {
             db_actor.send(DbImportParquet { path: msg.path }).await??;
+            Ok(())
+        })
+    }
+}
+
+impl Handler<AppendJsonl> for CollectionActor {
+    type Result = ResponseFuture<Result<(), ProjectError>>;
+
+    fn handle(&mut self, msg: AppendJsonl, _ctx: &mut Context<Self>) -> Self::Result {
+        let db_actor = self.db_actor.clone();
+        Box::pin(async move {
+            db_actor.send(DbAppendJsonl { path: msg.path }).await??;
+            Ok(())
+        })
+    }
+}
+
+impl Handler<AppendParquet> for CollectionActor {
+    type Result = ResponseFuture<Result<(), ProjectError>>;
+
+    fn handle(&mut self, msg: AppendParquet, _ctx: &mut Context<Self>) -> Self::Result {
+        let db_actor = self.db_actor.clone();
+        Box::pin(async move {
+            db_actor.send(DbAppendParquet { path: msg.path }).await??;
+            Ok(())
+        })
+    }
+}
+
+impl Handler<ImportPdf> for CollectionActor {
+    type Result = ResponseFuture<Result<(), ProjectError>>;
+
+    fn handle(&mut self, msg: ImportPdf, _ctx: &mut Context<Self>) -> Self::Result {
+        let db_actor = self.db_actor.clone();
+
+        Box::pin(async move {
+            let path = msg.path.clone();
+            let column = msg.column.clone();
+            let cfg = msg.chunker_config.clone();
+
+            // PDF conversion is CPU/IO-bound — run it on a blocking thread.
+            let chunks: Vec<String> = tokio::task::spawn_blocking(move || {
+                let markdown = crate::pdf::pdf_to_markdown(&path)?;
+                if let Some(chunker_cfg) = cfg {
+                    let chunker = crate::chunker::MarkdownChunker::new(chunker_cfg)?;
+                    anyhow::Ok(chunker.chunk(&markdown))
+                } else {
+                    anyhow::Ok(vec![markdown])
+                }
+            })
+            .await
+            .map_err(ProjectError::JoinError)??;
+
+            db_actor
+                .send(DbImportMarkdownChunks { chunks, column })
+                .await??;
             Ok(())
         })
     }
@@ -493,11 +756,6 @@ impl Handler<EmbedColumn> for CollectionActor {
                     column: column_name.clone(),
                 })
                 .await??;
-            let num_batches = (count + batch_size - 1) / batch_size;
-            info!(
-                "Starting to index {} records from column '{}' in batches of {}",
-                count, column_name, batch_size
-            );
 
             let has_index = db_actor
                 .send(DbCheckIndex {
@@ -525,6 +783,26 @@ impl Handler<EmbedColumn> for CollectionActor {
                     .await??;
             }
 
+            // For incremental indexing: skip rows that are already indexed.
+            let already_indexed = db_actor
+                .send(DbGetIndexedCount {
+                    column: column_name.clone(),
+                })
+                .await??;
+            let start_offset = already_indexed;
+            let remaining = count.saturating_sub(start_offset);
+            let num_batches = (remaining + batch_size - 1) / batch_size;
+
+            info!(
+                "Starting to index {} new records from column '{}' in batches of {} (skipping {} already indexed)",
+                remaining, column_name, batch_size, start_offset
+            );
+
+            if remaining == 0 {
+                info!("Column '{}' is already fully indexed", column_name);
+                return Ok(());
+            }
+
             let start = Instant::now();
 
             for batch in 0..num_batches {
@@ -540,7 +818,7 @@ impl Handler<EmbedColumn> for CollectionActor {
                 print!("\r{} / {} batches - ETA: {:?}", batch, total_steps, eta);
                 let _ = std::io::Write::flush(&mut std::io::stdout());
 
-                let offset = batch * batch_size;
+                let offset = start_offset + batch * batch_size;
 
                 let (texts, keys) = db_actor
                     .send(DbGetBatch {
