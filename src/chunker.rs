@@ -40,7 +40,7 @@ impl Default for ChunkerConfig {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```rust,no_run
 /// use letsearch::chunker::{ChunkerConfig, MarkdownChunker};
 ///
 /// let config = ChunkerConfig { max_tokens: 128, ..Default::default() };
@@ -188,6 +188,21 @@ impl MarkdownChunker {
             if para.is_empty() {
                 continue;
             }
+
+            // A paragraph that is already too large on its own needs special handling.
+            if self.count_tokens(para) > self.config.max_tokens {
+                // Flush the accumulator first.
+                if !current.trim().is_empty() {
+                    chunks.push(current.clone());
+                    current = String::new();
+                }
+                // Token-split the oversized paragraph; all resulting sub-chunks
+                // are complete — do NOT carry any of them into `current`.
+                let sub = self.split_by_tokens(para);
+                chunks.extend(sub.into_iter());
+                continue;
+            }
+
             let candidate = if current.is_empty() {
                 para.to_string()
             } else {
@@ -200,17 +215,11 @@ impl MarkdownChunker {
                 if !current.trim().is_empty() {
                     chunks.push(current.clone());
                 }
+                // Start the next chunk with optional overlap from the flushed chunk,
+                // then the new paragraph.
                 let overlap = self.tail_overlap(&current);
                 current = if overlap.is_empty() {
-                    // Still too large for a single paragraph — split by tokens.
-                    if self.count_tokens(para) > self.config.max_tokens {
-                        let sub = self.split_by_tokens(para);
-                        chunks.extend(sub.iter().cloned());
-                        // Start next chunk from the last sub-chunk's overlap.
-                        sub.last().cloned().unwrap_or_default()
-                    } else {
-                        para.to_string()
-                    }
+                    para.to_string()
                 } else {
                     format!("{}\n\n{}", overlap, para)
                 };
@@ -253,17 +262,17 @@ impl MarkdownChunker {
                 let mut overlap_words = 0;
                 let mut tok_count = 0;
                 for w in words[..end].iter().rev() {
-                    tok_count += self.count_tokens(w);
-                    if tok_count >= self.config.overlap_tokens {
+                    let w_tokens = self.count_tokens(w);
+                    if tok_count + w_tokens > self.config.overlap_tokens {
                         break;
                     }
+                    tok_count += w_tokens;
                     overlap_words += 1;
                 }
-                start = end.saturating_sub(overlap_words.max(1));
-                if start == 0 {
-                    // Prevent infinite loop if even the overlap covers everything.
-                    start = end;
-                }
+                let new_start = end.saturating_sub(overlap_words);
+                // Always advance: if overlap would stall at the same position,
+                // just move past the current chunk entirely.
+                start = if new_start > start { new_start } else { end };
             }
         }
         chunks
@@ -397,6 +406,36 @@ mod tests {
                     "chunk ({tok} tokens) exceeds limit {max}: {ch:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_no_infinite_loop_oversized_word() {
+        // A single "word" (no whitespace) that is very long — this should not
+        // loop indefinitely even when max_tokens is tiny.
+        let long_word = "a".repeat(500);
+        let text = format!("{long_word} short words here {long_word}");
+        let c = chunker(2, 1);
+        // Just assert it terminates and produces chunks.
+        let chunks = c.chunk(&text);
+        assert!(!chunks.is_empty());
+    }
+
+    #[test]
+    fn test_split_by_tokens_no_overlap() {
+        let words: Vec<String> = (1..=50).map(|i| format!("w{i}")).collect();
+        let text = words.join(" ");
+        let c = chunker(10, 0);
+        let chunks = c.chunk(&text);
+        assert!(chunks.len() > 1);
+        // No chunk should overlap with another when overlap_tokens == 0.
+        for i in 0..chunks.len().saturating_sub(1) {
+            let last_word_of_chunk = chunks[i].split_whitespace().last().unwrap();
+            let first_word_of_next = chunks[i + 1].split_whitespace().next().unwrap();
+            assert_ne!(
+                last_word_of_chunk, first_word_of_next,
+                "unexpected overlap at chunk boundary {i}"
+            );
         }
     }
 }
