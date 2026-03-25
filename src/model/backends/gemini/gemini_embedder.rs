@@ -89,11 +89,11 @@ impl Embedder for GeminiEmbedder {
         let model_full = format!("models/{}", self.model_name);
 
         let requests: Vec<EmbedRequest> = texts
-            .iter()
+            .into_iter()
             .map(|text| EmbedRequest {
                 model: model_full.clone(),
                 content: Content {
-                    parts: vec![Part { text: text.clone() }],
+                    parts: vec![Part { text }],
                 },
             })
             .collect();
