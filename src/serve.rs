@@ -187,10 +187,11 @@ pub async fn run_server(
     port: i32,
     collection_name: String,
     token: Option<String>,
+    gemini_api_key: Option<String>,
 ) -> std::io::Result<()> {
     let model_manager_addr = ModelManagerActor::new().start();
     let collection_manager_addr =
-        CollectionManagerActor::new(token, model_manager_addr.clone()).start();
+        CollectionManagerActor::new(token, model_manager_addr.clone(), gemini_api_key).start();
 
     let load_result = collection_manager_addr
         .send(LoadCollection {
