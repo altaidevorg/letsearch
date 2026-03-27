@@ -16,6 +16,17 @@ use crate::collection::vector_index::VectorIndex;
 use crate::error::ProjectError;
 use crate::model::model_utils::{Embeddings, ModelOutputDType};
 
+// ---- Helpers ----
+
+/// Return `true` when `name` is a safe SQL identifier (alphanumeric + `_`).
+///
+/// Column names and other identifiers that must be interpolated directly into
+/// SQL strings (they cannot be parameterized) are validated with this guard
+/// to prevent SQL-injection attacks.
+fn is_valid_identifier(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
 // ---- Db Messages ----
 
 #[derive(Message)]
@@ -234,10 +245,11 @@ impl Handler<DbAppendJsonl> for CollectionDbActor {
             )));
         }
         let col_list = cols.join(", ");
-        tx.execute_batch(&format!(
-            "INSERT INTO {} ({}) SELECT {} FROM read_json_auto('{}');",
-            self.config.name, col_list, col_list, msg.path
-        ))?;
+        let sql = format!(
+            "INSERT INTO {} ({}) SELECT {} FROM read_json_auto(?);",
+            self.config.name, col_list, col_list
+        );
+        tx.execute(&sql, duckdb::params![msg.path])?;
         tx.commit()?;
         Ok(())
     }
@@ -268,10 +280,11 @@ impl Handler<DbAppendParquet> for CollectionDbActor {
             )));
         }
         let col_list = cols.join(", ");
-        tx.execute_batch(&format!(
-            "INSERT INTO {} ({}) SELECT {} FROM read_parquet('{}');",
-            self.config.name, col_list, col_list, msg.path
-        ))?;
+        let sql = format!(
+            "INSERT INTO {} ({}) SELECT {} FROM read_parquet(?);",
+            self.config.name, col_list, col_list
+        );
+        tx.execute(&sql, duckdb::params![msg.path])?;
         tx.commit()?;
         Ok(())
     }
@@ -287,6 +300,15 @@ impl Handler<DbImportMarkdownChunks> for CollectionDbActor {
     ) -> Self::Result {
         if msg.chunks.is_empty() {
             return Ok(());
+        }
+
+        // Validate the column name to prevent SQL injection (column names cannot
+        // be passed as bind parameters in SQL).
+        if !is_valid_identifier(&msg.column) {
+            return Err(ProjectError::Anyhow(anyhow!(
+                "Invalid column name '{}': only alphanumeric characters and underscores are allowed",
+                msg.column
+            )));
         }
 
         let tx = self.conn.transaction()?;

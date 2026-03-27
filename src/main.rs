@@ -147,7 +147,7 @@ pub enum Commands {
     /// Add new documents to an existing collection for incremental indexing.
     /// Supports .jsonl, .parquet, and .pdf files.
     AddDocs {
-        /// Path to the file(s) to add.
+        /// Path to the file to add.
         /// Supported formats: .jsonl, .parquet, .pdf
         #[arg(required = true)]
         files: String,
@@ -424,6 +424,9 @@ async fn main() -> anyhow::Result<()> {
             progress_bar.finish_and_clear();
             info!("Collection '{}' loaded", collection_name);
 
+            // Fetch config once and reuse it throughout this command.
+            let config = collection_addr.send(GetConfig).await??;
+
             // Import new data.
             if files.ends_with(".jsonl") {
                 collection_addr
@@ -441,7 +444,6 @@ async fn main() -> anyhow::Result<()> {
                 info!("Appended Parquet data from '{}'", files);
             } else if files.ends_with(".pdf") {
                 // Determine the target column.
-                let config = collection_addr.send(GetConfig).await??;
                 let target_col = column
                     .clone()
                     .or_else(|| config.index_columns.first().cloned())
@@ -469,7 +471,6 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // Re-embed new rows for all configured index columns.
-            let config = collection_addr.send(GetConfig).await??;
             if !config.index_columns.is_empty() {
                 let model_id = collection_manager_addr
                     .send(GetModelIdForCollection {
