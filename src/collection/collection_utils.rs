@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs::File;
+use std::io::BufWriter;
 use std::path::PathBuf;
 
 const DEFAULT_HOME_DIR: &str = ".letsearch";
@@ -72,9 +73,29 @@ impl CollectionConfig {
     pub fn from_file(name: &str) -> anyhow::Result<Self> {
         let collection_dir = home_dir().join("collections").join(name);
         let config_path = collection_dir.join("config.json");
-        let config_file = File::open(config_path)?;
+        let config_file = File::open(&config_path).map_err(|e| {
+            anyhow::anyhow!(
+                "Cannot open collection config at {}: {}. \
+                 Run `letsearch index` from the same working directory (or set LETSEARCH_HOME) \
+                 so the collection is created under .letsearch/collections/<name>/.",
+                config_path.display(),
+                e
+            )
+        })?;
         let config: CollectionConfig = serde_json::from_reader(config_file)?;
         Ok(config)
+    }
+
+    /// Writes this config to `LETSEARCH_HOME/collections/<name>/config.json`.
+    /// Called when a collection is opened so `search`, `serve`, and `add-docs` can reload it in a new process.
+    pub fn write_to_collection_dir(&self) -> anyhow::Result<()> {
+        let collection_dir = home_dir().join("collections").join(self.name.as_str());
+        std::fs::create_dir_all(&collection_dir)?;
+        let path = collection_dir.join("config.json");
+        let f = File::create(&path)?;
+        let w = BufWriter::new(f);
+        serde_json::to_writer_pretty(w, self)?;
+        Ok(())
     }
 }
 

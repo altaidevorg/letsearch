@@ -37,12 +37,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Index documents
+    /// Index documents from JSONL, Parquet, or PDF.
     Index {
         /// Path to file(s) to index.
-        /// You can provide local or hf://datasets paths.
-        /// It might be  a regular  path (absolute
-        /// or relative), or a glob pattern.
+        /// Supports `.jsonl`, `.parquet`, and `.pdf` (case-insensitive suffix).
+        /// For JSONL/Parquet you can use local paths, `hf://datasets/...`, or glob patterns where DuckDB accepts them.
         #[arg(required = true)]
         files: String,
 
@@ -83,6 +82,20 @@ pub enum Commands {
         /// remove and re-create collection if it exists
         #[arg(long, action=clap::ArgAction::SetTrue)]
         overwrite: bool,
+
+        /// For PDF files: maximum number of tokens per chunk after Markdown conversion.
+        /// When omitted, the full document is stored as a single row (no splitting).
+        #[arg(long)]
+        chunk_max_tokens: Option<usize>,
+
+        /// For PDF files: number of overlapping tokens between consecutive chunks.
+        #[arg(long, default_value = "50")]
+        chunk_overlap_tokens: usize,
+
+        /// For PDF files: path to a Hugging Face `tokenizer.json` for accurate token counting.
+        /// When omitted, a word-count approximation is used for chunking.
+        #[arg(long)]
+        tokenizer_path: Option<String>,
     },
 
     /// serve a collection for search over web API
@@ -218,6 +231,9 @@ async fn main() -> anyhow::Result<()> {
             batch_size,
             index_columns,
             overwrite,
+            chunk_max_tokens,
+            chunk_overlap_tokens,
+            tokenizer_path,
         } => {
             let mut config = CollectionConfig::default();
             config.name = collection_name.to_string();
@@ -246,20 +262,42 @@ async fn main() -> anyhow::Result<()> {
                 .await??;
             info!("Collection '{}' created", collection_name);
 
-            if files.ends_with(".jsonl") {
+            let files_lower = files.to_ascii_lowercase();
+            if files_lower.ends_with(".jsonl") {
                 collection_addr
                     .send(ImportJsonl {
                         path: files.to_string(),
                     })
                     .await??;
-            } else if files.ends_with(".parquet") {
+            } else if files_lower.ends_with(".parquet") {
                 collection_addr
                     .send(ImportParquet {
                         path: files.to_string(),
                     })
                     .await??;
+            } else if files_lower.ends_with(".pdf") {
+                if index_columns.len() != 1 {
+                    return Err(anyhow::anyhow!(
+                        "PDF indexing requires exactly one --index-columns <NAME> (VARCHAR column for chunked text)."
+                    ));
+                }
+                let chunker_config = chunk_max_tokens.map(|max| ChunkerConfig {
+                    max_tokens: max,
+                    overlap_tokens: *chunk_overlap_tokens,
+                    tokenizer_path: tokenizer_path.clone(),
+                });
+                collection_addr
+                    .send(ImportPdf {
+                        path: files.to_string(),
+                        column: index_columns[0].clone(),
+                        chunker_config,
+                    })
+                    .await??;
+                info!("Imported PDF into column '{}'", index_columns[0]);
             } else {
-                return Err(anyhow::anyhow!("This file is currently not supported"));
+                return Err(anyhow::anyhow!(
+                    "Unsupported file type. Use a path ending with .jsonl, .parquet, or .pdf"
+                ));
             }
 
             if !index_columns.is_empty() {

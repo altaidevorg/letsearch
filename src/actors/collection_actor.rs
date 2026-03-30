@@ -137,6 +137,14 @@ impl CollectionDbActor {
         // ensure dir exists
         std::fs::create_dir_all(&collection_dir).unwrap();
 
+        config.write_to_collection_dir().unwrap_or_else(|e| {
+            panic!(
+                "Failed to persist collection config under {}: {}",
+                collection_dir.display(),
+                e
+            );
+        });
+
         let db_path = collection_dir.join(config.db_path.as_str());
         let conn = duckdb::Connection::open(&db_path).expect("Failed to open DuckDB connection");
 
