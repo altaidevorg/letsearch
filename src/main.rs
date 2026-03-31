@@ -1,12 +1,12 @@
-use actix::Actor;
+use actix::{Actor, Addr};
 use anyhow;
 use chrono;
 use clap::{Parser, Subcommand};
 use env_logger::fmt::Formatter;
 use indicatif::{ProgressBar, ProgressStyle};
 use letsearch::actors::collection_actor::{
-    AppendJsonl, AppendParquet, EmbedColumn, GetConfig, ImportJsonl, ImportParquet, ImportPdf,
-    ImportTextFile, ImportWordFile,
+    AppendJsonl, AppendParquet, CollectionActor, EmbedColumn, GetConfig, ImportJsonl, ImportParquet,
+    ImportPdf, ImportTextFile, ImportWordFile,
 };
 use letsearch::actors::collection_manager_actor::{
     CollectionManagerActor, CreateCollection, GetModelIdForCollection, LoadCollection,
@@ -256,6 +256,136 @@ fn is_word_document_path(files_lower: &str) -> bool {
     files_lower.ends_with(".docx") || files_lower.ends_with(".doc")
 }
 
+#[derive(Clone, Copy)]
+enum ChunkedDocumentKind {
+    Pdf,
+    Word,
+    Plaintext,
+}
+
+#[derive(Clone, Copy)]
+enum ChunkedImportLog {
+    Index,
+    AddDocs,
+}
+
+/// PDF, Word, or UTF-8 text / Markdown — routed to the same chunking import messages as `index` / `add-docs`.
+fn chunked_document_kind(files_lower: &str) -> Option<ChunkedDocumentKind> {
+    if files_lower.ends_with(".pdf") {
+        Some(ChunkedDocumentKind::Pdf)
+    } else if is_word_document_path(files_lower) {
+        Some(ChunkedDocumentKind::Word)
+    } else if is_plaintext_document_path(files_lower) {
+        Some(ChunkedDocumentKind::Plaintext)
+    } else {
+        None
+    }
+}
+
+fn chunker_config_from_cli_args(
+    chunk_max_tokens: Option<usize>,
+    chunk_overlap_tokens: usize,
+    tokenizer_path: Option<String>,
+) -> Option<ChunkerConfig> {
+    chunk_max_tokens.map(|max| ChunkerConfig {
+        max_tokens: max,
+        overlap_tokens: chunk_overlap_tokens,
+        tokenizer_path,
+    })
+}
+
+fn index_requires_single_column_for_chunked(
+    index_columns: &[String],
+    kind: ChunkedDocumentKind,
+) -> anyhow::Result<String> {
+    if index_columns.len() != 1 {
+        let msg = match kind {
+            ChunkedDocumentKind::Pdf => {
+                "PDF indexing requires exactly one --index-columns <NAME> (VARCHAR column for chunked text)."
+            }
+            ChunkedDocumentKind::Word => {
+                "Word (.doc / .docx) indexing requires exactly one --index-columns <NAME> (VARCHAR column for text chunks)."
+            }
+            ChunkedDocumentKind::Plaintext => {
+                "Plain-text / Markdown indexing requires exactly one --index-columns <NAME> (VARCHAR column for text chunks)."
+            }
+        };
+        Err(anyhow::anyhow!(msg))
+    } else {
+        Ok(index_columns[0].clone())
+    }
+}
+
+fn add_docs_chunked_target_column(
+    cli_column: &Option<String>,
+    config_index_columns: &[String],
+) -> String {
+    cli_column
+        .clone()
+        .or_else(|| config_index_columns.first().cloned())
+        .unwrap_or_else(|| "text".to_string())
+}
+
+async fn import_chunked_document_file(
+    collection_addr: &Addr<CollectionActor>,
+    path: String,
+    column: String,
+    chunker_config: Option<ChunkerConfig>,
+    kind: ChunkedDocumentKind,
+    log: ChunkedImportLog,
+) -> anyhow::Result<()> {
+    match kind {
+        ChunkedDocumentKind::Pdf => {
+            collection_addr
+                .send(ImportPdf {
+                    path: path.clone(),
+                    column: column.clone(),
+                    chunker_config,
+                })
+                .await??;
+            match log {
+                ChunkedImportLog::Index => info!("Imported PDF into column '{}'", column),
+                ChunkedImportLog::AddDocs => info!("Imported PDF from '{}'", path),
+            }
+        }
+        ChunkedDocumentKind::Word => {
+            collection_addr
+                .send(ImportWordFile {
+                    path: path.clone(),
+                    column: column.clone(),
+                    chunker_config,
+                })
+                .await??;
+            match log {
+                ChunkedImportLog::Index => info!("Imported Word document into column '{}'", column),
+                ChunkedImportLog::AddDocs => info!(
+                    "Imported Word document from '{}' into column '{}'",
+                    path, column
+                ),
+            }
+        }
+        ChunkedDocumentKind::Plaintext => {
+            collection_addr
+                .send(ImportTextFile {
+                    path: path.clone(),
+                    column: column.clone(),
+                    chunker_config,
+                })
+                .await??;
+            match log {
+                ChunkedImportLog::Index => {
+                    info!("Imported text/Markdown file into column '{}'", column)
+                }
+                ChunkedImportLog::AddDocs => info!(
+                    "Imported text/Markdown from '{}' into column '{}'",
+                    path, column
+                ),
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Trims whitespace and strips Unicode “smart” quotes often pasted around paths in terminals.
 fn sanitize_file_path_arg(s: &str) -> String {
     s.trim()
@@ -270,6 +400,25 @@ fn sanitize_file_path_arg(s: &str) -> String {
 
 fn is_safe_sql_identifier(name: &str) -> bool {
     !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+fn validate_sql_identifier(name: &str, arg_name: &str) -> anyhow::Result<()> {
+    if is_safe_sql_identifier(name) {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Invalid {} '{}': only letters, digits, and underscores are allowed",
+            arg_name,
+            name
+        ))
+    }
+}
+
+fn validate_sql_identifiers(cols: &[String], arg_name: &str) -> anyhow::Result<()> {
+    for c in cols {
+        validate_sql_identifier(c, arg_name)?;
+    }
+    Ok(())
 }
 
 fn duckdb_quote_ident_cli(name: &str) -> String {
@@ -309,14 +458,7 @@ async fn main() -> anyhow::Result<()> {
             chunk_overlap_tokens,
             tokenizer_path,
         } => {
-            for c in index_columns.iter() {
-                if !is_safe_sql_identifier(c) {
-                    return Err(anyhow::anyhow!(
-                        "Invalid --index-columns '{}': only letters, digits, and underscores are allowed",
-                        c
-                    ));
-                }
-            }
+            validate_sql_identifiers(index_columns, "--index-columns")?;
 
             let mut config = CollectionConfig::default();
             config.name = collection_name.to_string();
@@ -359,69 +501,22 @@ async fn main() -> anyhow::Result<()> {
                         path: file_path.clone(),
                     })
                     .await??;
-            } else if files_lower.ends_with(".pdf") {
-                if index_columns.len() != 1 {
-                    return Err(anyhow::anyhow!(
-                        "PDF indexing requires exactly one --index-columns <NAME> (VARCHAR column for chunked text)."
-                    ));
-                }
-                let chunker_config = chunk_max_tokens.map(|max| ChunkerConfig {
-                    max_tokens: max,
-                    overlap_tokens: *chunk_overlap_tokens,
-                    tokenizer_path: tokenizer_path.clone(),
-                });
-                collection_addr
-                    .send(ImportPdf {
-                        path: file_path.clone(),
-                        column: index_columns[0].clone(),
-                        chunker_config,
-                    })
-                    .await??;
-                info!("Imported PDF into column '{}'", index_columns[0]);
-            } else if is_word_document_path(&files_lower) {
-                if index_columns.len() != 1 {
-                    return Err(anyhow::anyhow!(
-                        "Word (.doc / .docx) indexing requires exactly one --index-columns <NAME> (VARCHAR column for text chunks)."
-                    ));
-                }
-                let chunker_config = chunk_max_tokens.map(|max| ChunkerConfig {
-                    max_tokens: max,
-                    overlap_tokens: *chunk_overlap_tokens,
-                    tokenizer_path: tokenizer_path.clone(),
-                });
-                collection_addr
-                    .send(ImportWordFile {
-                        path: file_path.clone(),
-                        column: index_columns[0].clone(),
-                        chunker_config,
-                    })
-                    .await??;
-                info!(
-                    "Imported Word document into column '{}'",
-                    index_columns[0]
+            } else if let Some(kind) = chunked_document_kind(&files_lower) {
+                let col = index_requires_single_column_for_chunked(index_columns, kind)?;
+                let chunker_config = chunker_config_from_cli_args(
+                    *chunk_max_tokens,
+                    *chunk_overlap_tokens,
+                    tokenizer_path.clone(),
                 );
-            } else if is_plaintext_document_path(&files_lower) {
-                if index_columns.len() != 1 {
-                    return Err(anyhow::anyhow!(
-                        "Plain-text / Markdown indexing requires exactly one --index-columns <NAME> (VARCHAR column for text chunks)."
-                    ));
-                }
-                let chunker_config = chunk_max_tokens.map(|max| ChunkerConfig {
-                    max_tokens: max,
-                    overlap_tokens: *chunk_overlap_tokens,
-                    tokenizer_path: tokenizer_path.clone(),
-                });
-                collection_addr
-                    .send(ImportTextFile {
-                        path: file_path.clone(),
-                        column: index_columns[0].clone(),
-                        chunker_config,
-                    })
-                    .await??;
-                info!(
-                    "Imported text/Markdown file into column '{}'",
-                    index_columns[0]
-                );
+                import_chunked_document_file(
+                    &collection_addr,
+                    file_path.clone(),
+                    col,
+                    chunker_config,
+                    kind,
+                    ChunkedImportLog::Index,
+                )
+                .await?;
             } else {
                 return Err(anyhow::anyhow!(
                     "Unsupported file type. Use .jsonl, .parquet, .pdf, .doc, .docx, .txt, .md, or .markdown"
@@ -461,14 +556,7 @@ async fn main() -> anyhow::Result<()> {
             if cols.is_empty() {
                 cols.push("text".to_string());
             }
-            for c in &cols {
-                if !is_safe_sql_identifier(c) {
-                    return Err(anyhow::anyhow!(
-                        "Invalid --index-columns '{}': only letters, digits, and underscores are allowed",
-                        c
-                    ));
-                }
-            }
+            validate_sql_identifiers(&cols, "--index-columns")?;
 
             let mut config = CollectionConfig::default();
             config.name = collection_name.to_string();
@@ -520,12 +608,7 @@ async fn main() -> anyhow::Result<()> {
             hf_token,
             gemini_api_key,
         } => {
-            if !is_safe_sql_identifier(column) {
-                return Err(anyhow::anyhow!(
-                    "Invalid --column '{}': only letters, digits, and underscores are allowed",
-                    column
-                ));
-            }
+            validate_sql_identifier(column, "--column")?;
 
             let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
             let gemini_key = gemini_api_key
@@ -598,11 +681,7 @@ async fn main() -> anyhow::Result<()> {
             limit,
             offset,
         } => {
-            if !is_safe_sql_identifier(column) {
-                return Err(anyhow::anyhow!(
-                    "Invalid column name: only letters, digits, and underscores are allowed"
-                ));
-            }
+            validate_sql_identifier(column, "--column")?;
 
             let config = CollectionConfig::from_file(collection_name)?;
             let cap: u64 = 10_000;
@@ -708,73 +787,23 @@ async fn main() -> anyhow::Result<()> {
                     })
                     .await??;
                 info!("Appended Parquet data from '{}'", file_path);
-            } else if files_lower.ends_with(".pdf") {
-                // Determine the target column.
-                let target_col = column
-                    .clone()
-                    .or_else(|| config.index_columns.first().cloned())
-                    .unwrap_or_else(|| "text".to_string());
-
-                let chunker_config = chunk_max_tokens.map(|max| ChunkerConfig {
-                    max_tokens: max,
-                    overlap_tokens: *chunk_overlap_tokens,
-                    tokenizer_path: tokenizer_path.clone(),
-                });
-
-                collection_addr
-                    .send(ImportPdf {
-                        path: file_path.clone(),
-                        column: target_col,
-                        chunker_config,
-                    })
-                    .await??;
-                info!("Imported PDF from '{}'", file_path);
-            } else if is_word_document_path(&files_lower) {
-                let target_col = column
-                    .clone()
-                    .or_else(|| config.index_columns.first().cloned())
-                    .unwrap_or_else(|| "text".to_string());
-
-                let chunker_config = chunk_max_tokens.map(|max| ChunkerConfig {
-                    max_tokens: max,
-                    overlap_tokens: *chunk_overlap_tokens,
-                    tokenizer_path: tokenizer_path.clone(),
-                });
-
-                collection_addr
-                    .send(ImportWordFile {
-                        path: file_path.clone(),
-                        column: target_col.clone(),
-                        chunker_config,
-                    })
-                    .await??;
-                info!(
-                    "Imported Word document from '{}' into column '{}'",
-                    file_path, target_col
+            } else if let Some(kind) = chunked_document_kind(&files_lower) {
+                let target_col = add_docs_chunked_target_column(column, &config.index_columns);
+                validate_sql_identifier(&target_col, "--column")?;
+                let chunker_config = chunker_config_from_cli_args(
+                    *chunk_max_tokens,
+                    *chunk_overlap_tokens,
+                    tokenizer_path.clone(),
                 );
-            } else if is_plaintext_document_path(&files_lower) {
-                let target_col = column
-                    .clone()
-                    .or_else(|| config.index_columns.first().cloned())
-                    .unwrap_or_else(|| "text".to_string());
-
-                let chunker_config = chunk_max_tokens.map(|max| ChunkerConfig {
-                    max_tokens: max,
-                    overlap_tokens: *chunk_overlap_tokens,
-                    tokenizer_path: tokenizer_path.clone(),
-                });
-
-                collection_addr
-                    .send(ImportTextFile {
-                        path: file_path.clone(),
-                        column: target_col.clone(),
-                        chunker_config,
-                    })
-                    .await??;
-                info!(
-                    "Imported text/Markdown from '{}' into column '{}'",
-                    file_path, target_col
-                );
+                import_chunked_document_file(
+                    &collection_addr,
+                    file_path.clone(),
+                    target_col,
+                    chunker_config,
+                    kind,
+                    ChunkedImportLog::AddDocs,
+                )
+                .await?;
             } else {
                 return Err(anyhow::anyhow!(
                     "Unsupported file format for add-docs: '{}' (use .jsonl, .parquet, .pdf, .doc, .docx, .txt, .md, .markdown)",
