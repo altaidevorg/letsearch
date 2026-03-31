@@ -159,13 +159,13 @@ pub struct CollectionDbActor {
 impl CollectionDbActor {
     /// Create collection directory (if needed) and write `config.json`. Does not open DuckDB.
     pub fn prepare_collection_layout(config: &CollectionConfig) -> Result<(), ProjectError> {
+        use anyhow::Context;
         let collection_dir = home_dir().join("collections").join(config.name.as_str());
-        std::fs::create_dir_all(&collection_dir).map_err(|e| {
-            ProjectError::Anyhow(anyhow::anyhow!(
-                "Failed to create collection directory {}: {}",
-                collection_dir.display(),
-                e
-            ))
+        std::fs::create_dir_all(&collection_dir).with_context(|| {
+            format!(
+                "Failed to create collection directory {}",
+                collection_dir.display()
+            )
         })?;
         config.write_to_collection_dir()?;
         Ok(())
@@ -937,6 +937,31 @@ impl Handler<GetConfig> for CollectionActor {
     }
 }
 
+/// Keyset cursor for [`DbGetBatch`]: `None` = start at the first `_key`; `Some(k)` = next rows have `_key > k`.
+/// When resuming after `already_indexed` vectors, resolves `k` to the last indexed row’s `_key` in sort order.
+async fn embed_resume_after_key(
+    db_actor: &Addr<CollectionDbActor>,
+    column_name: &str,
+    already_indexed: u64,
+) -> Result<Option<u64>, ProjectError> {
+    if already_indexed == 0 {
+        return Ok(None);
+    }
+    match db_actor
+        .send(DbGetKeyAtOrderOffset {
+            offset: already_indexed.saturating_sub(1),
+        })
+        .await??
+    {
+        Some(key) => Ok(Some(key)),
+        None => Err(ProjectError::Anyhow(anyhow!(
+            "Cannot resume embedding: fewer table rows than indexed count for column '{}' (indexed {} rows by key order)",
+            column_name,
+            already_indexed
+        ))),
+    }
+}
+
 impl Handler<EmbedColumn> for CollectionActor {
     type Result = ResponseFuture<Result<(), ProjectError>>;
 
@@ -1001,25 +1026,7 @@ impl Handler<EmbedColumn> for CollectionActor {
                 return Ok(());
             }
 
-            let mut after_key: Option<u64> = if already_indexed == 0 {
-                None
-            } else {
-                match db_actor
-                    .send(DbGetKeyAtOrderOffset {
-                        offset: already_indexed.saturating_sub(1),
-                    })
-                    .await??
-                {
-                    Some(key) => Some(key),
-                    None => {
-                        return Err(ProjectError::Anyhow(anyhow!(
-                            "Cannot resume embedding: fewer table rows than indexed count for column '{}' (indexed {} rows by key order)",
-                            column_name,
-                            already_indexed
-                        )));
-                    }
-                }
-            };
+            let mut after_key = embed_resume_after_key(&db_actor, &column_name, already_indexed).await?;
 
             let start = Instant::now();
             let mut batch_idx: u64 = 0;

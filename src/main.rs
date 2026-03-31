@@ -269,6 +269,24 @@ enum ChunkedImportLog {
     AddDocs,
 }
 
+/// Detected file category for `index` / `add-docs` pipelines (tabular vs chunked documents).
+#[derive(Clone, Copy)]
+enum ImportFileKind {
+    Jsonl,
+    Parquet,
+    Chunked(ChunkedDocumentKind),
+}
+
+fn import_file_kind(files_lower: &str) -> Option<ImportFileKind> {
+    if files_lower.ends_with(".jsonl") {
+        Some(ImportFileKind::Jsonl)
+    } else if files_lower.ends_with(".parquet") {
+        Some(ImportFileKind::Parquet)
+    } else {
+        chunked_document_kind(files_lower).map(ImportFileKind::Chunked)
+    }
+}
+
 /// PDF, Word, or UTF-8 text / Markdown — routed to the same chunking import messages as `index` / `add-docs`.
 fn chunked_document_kind(files_lower: &str) -> Option<ChunkedDocumentKind> {
     if files_lower.ends_with(".pdf") {
@@ -489,38 +507,43 @@ async fn main() -> anyhow::Result<()> {
 
             let file_path = sanitize_file_path_arg(files);
             let files_lower = file_path.to_ascii_lowercase();
-            if files_lower.ends_with(".jsonl") {
-                collection_addr
-                    .send(ImportJsonl {
-                        path: file_path.clone(),
-                    })
-                    .await??;
-            } else if files_lower.ends_with(".parquet") {
-                collection_addr
-                    .send(ImportParquet {
-                        path: file_path.clone(),
-                    })
-                    .await??;
-            } else if let Some(kind) = chunked_document_kind(&files_lower) {
-                let col = index_requires_single_column_for_chunked(index_columns, kind)?;
-                let chunker_config = chunker_config_from_cli_args(
-                    *chunk_max_tokens,
-                    *chunk_overlap_tokens,
-                    tokenizer_path.clone(),
-                );
-                import_chunked_document_file(
-                    &collection_addr,
-                    file_path.clone(),
-                    col,
-                    chunker_config,
-                    kind,
-                    ChunkedImportLog::Index,
-                )
-                .await?;
-            } else {
-                return Err(anyhow::anyhow!(
-                    "Unsupported file type. Use .jsonl, .parquet, .pdf, .doc, .docx, .txt, .md, or .markdown"
-                ));
+            match import_file_kind(&files_lower) {
+                Some(ImportFileKind::Jsonl) => {
+                    collection_addr
+                        .send(ImportJsonl {
+                            path: file_path.clone(),
+                        })
+                        .await??;
+                }
+                Some(ImportFileKind::Parquet) => {
+                    collection_addr
+                        .send(ImportParquet {
+                            path: file_path.clone(),
+                        })
+                        .await??;
+                }
+                Some(ImportFileKind::Chunked(kind)) => {
+                    let col = index_requires_single_column_for_chunked(index_columns, kind)?;
+                    let chunker_config = chunker_config_from_cli_args(
+                        *chunk_max_tokens,
+                        *chunk_overlap_tokens,
+                        tokenizer_path.clone(),
+                    );
+                    import_chunked_document_file(
+                        &collection_addr,
+                        file_path.clone(),
+                        col,
+                        chunker_config,
+                        kind,
+                        ChunkedImportLog::Index,
+                    )
+                    .await?;
+                }
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Unsupported file type. Use .jsonl, .parquet, .pdf, .doc, .docx, .txt, .md, or .markdown"
+                    ));
+                }
             }
 
             if !index_columns.is_empty() {
@@ -773,42 +796,47 @@ async fn main() -> anyhow::Result<()> {
             // Import new data.
             let file_path = sanitize_file_path_arg(files);
             let files_lower = file_path.to_ascii_lowercase();
-            if files_lower.ends_with(".jsonl") {
-                collection_addr
-                    .send(AppendJsonl {
-                        path: file_path.clone(),
-                    })
-                    .await??;
-                info!("Appended JSONL data from '{}'", file_path);
-            } else if files_lower.ends_with(".parquet") {
-                collection_addr
-                    .send(AppendParquet {
-                        path: file_path.clone(),
-                    })
-                    .await??;
-                info!("Appended Parquet data from '{}'", file_path);
-            } else if let Some(kind) = chunked_document_kind(&files_lower) {
-                let target_col = add_docs_chunked_target_column(column, &config.index_columns);
-                validate_sql_identifier(&target_col, "--column")?;
-                let chunker_config = chunker_config_from_cli_args(
-                    *chunk_max_tokens,
-                    *chunk_overlap_tokens,
-                    tokenizer_path.clone(),
-                );
-                import_chunked_document_file(
-                    &collection_addr,
-                    file_path.clone(),
-                    target_col,
-                    chunker_config,
-                    kind,
-                    ChunkedImportLog::AddDocs,
-                )
-                .await?;
-            } else {
-                return Err(anyhow::anyhow!(
-                    "Unsupported file format for add-docs: '{}' (use .jsonl, .parquet, .pdf, .doc, .docx, .txt, .md, .markdown)",
-                    file_path
-                ));
+            match import_file_kind(&files_lower) {
+                Some(ImportFileKind::Jsonl) => {
+                    collection_addr
+                        .send(AppendJsonl {
+                            path: file_path.clone(),
+                        })
+                        .await??;
+                    info!("Appended JSONL data from '{}'", file_path);
+                }
+                Some(ImportFileKind::Parquet) => {
+                    collection_addr
+                        .send(AppendParquet {
+                            path: file_path.clone(),
+                        })
+                        .await??;
+                    info!("Appended Parquet data from '{}'", file_path);
+                }
+                Some(ImportFileKind::Chunked(kind)) => {
+                    let target_col = add_docs_chunked_target_column(column, &config.index_columns);
+                    validate_sql_identifier(&target_col, "--column")?;
+                    let chunker_config = chunker_config_from_cli_args(
+                        *chunk_max_tokens,
+                        *chunk_overlap_tokens,
+                        tokenizer_path.clone(),
+                    );
+                    import_chunked_document_file(
+                        &collection_addr,
+                        file_path.clone(),
+                        target_col,
+                        chunker_config,
+                        kind,
+                        ChunkedImportLog::AddDocs,
+                    )
+                    .await?;
+                }
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "Unsupported file format for add-docs: '{}' (use .jsonl, .parquet, .pdf, .doc, .docx, .txt, .md, .markdown)",
+                        file_path
+                    ));
+                }
             }
 
             // Re-embed new rows for all configured index columns.
