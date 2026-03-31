@@ -5,6 +5,7 @@ use duckdb::arrow::datatypes::UInt64Type;
 use duckdb::arrow::record_batch::RecordBatch;
 use log::info;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use usearch::f16 as UsearchF16;
 use usearch::{IndexOptions, MetricKind, ScalarKind};
@@ -665,15 +666,19 @@ impl CollectionActor {
         model_manager: Addr<ModelManagerActor>,
     ) -> Result<Self, ProjectError> {
         CollectionDbActor::prepare_collection_layout(&config)?;
-        let config_for_db = config.clone();
-        let db_actor = SyncArbiter::start(1, move || {
-            // `SyncArbiter` requires `Fn`, so clone config on each factory invocation.
-            CollectionDbActor::open_collection_db(config_for_db.clone()).unwrap_or_else(|e| {
-                panic!(
-                    "Failed to open DuckDB for collection after layout was prepared: {}",
-                    e
-                )
-            })
+        // Open DB on the caller thread so failures become `Err` instead of a panicked worker
+        // and a seemingly-healthy `CollectionActor` with a dead `db_actor`.
+        let db = CollectionDbActor::open_collection_db(config.clone())?;
+        let init_cell = Arc::new(Mutex::new(Some(db)));
+        let db_actor = SyncArbiter::start(1, {
+            let init_cell = Arc::clone(&init_cell);
+            move || {
+                init_cell
+                    .lock()
+                    .expect("collection DB init mutex poisoned")
+                    .take()
+                    .expect("SyncArbiter factory must run exactly once for this pool")
+            }
         });
 
         Ok(Self {

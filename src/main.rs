@@ -709,9 +709,14 @@ async fn main() -> anyhow::Result<()> {
                 .join("collections")
                 .join(config.name.as_str())
                 .join(config.db_path.as_str());
-            let conn = duckdb::Connection::open(&db_path).map_err(|e| {
+            let ro_config = duckdb::Config::default()
+                .access_mode(duckdb::AccessMode::ReadOnly)
+                .map_err(|e| {
+                    anyhow::anyhow!("DuckDB read-only configuration failed: {}", e)
+                })?;
+            let conn = duckdb::Connection::open_with_flags(&db_path, ro_config).map_err(|e| {
                 anyhow::anyhow!(
-                    "Open DuckDB at {}: {} (same cwd / LETSEARCH_HOME as when you ran index?)",
+                    "Open DuckDB (read-only) at {}: {} (same cwd / LETSEARCH_HOME as when you ran index?)",
                     db_path.display(),
                     e
                 )
