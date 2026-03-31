@@ -8,8 +8,30 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use std::fs::File;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Recursively deletes `path` on drop so LibreOffice temp output is always cleaned up.
+struct TempDirGuard {
+    path: PathBuf,
+}
+
+impl TempDirGuard {
+    fn create(path: PathBuf) -> std::io::Result<Self> {
+        std::fs::create_dir_all(&path)?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
 
 /// Read `.docx` or `.doc` and return UTF-8 plain text (lossy where needed).
 pub fn word_document_to_plain_text(path: &Path) -> anyhow::Result<String> {
@@ -51,12 +73,20 @@ fn docx_to_plain_text(path: &Path) -> anyhow::Result<String> {
 
     loop {
         match reader.read_event_into(&mut buf)? {
-            Event::Start(ref e) | Event::Empty(ref e) => {
+            Event::Start(ref e) => {
                 let local = e.local_name();
                 match local.as_ref() {
                     b"t" => in_w_t = true,
                     b"tab" => out.push('\t'),
                     b"br" | b"cr" => out.push('\n'),
+                    _ => {}
+                }
+            }
+            Event::Empty(ref e) => {
+                let local = e.local_name();
+                match local.as_ref() {
+                    b"tab" => out.push('\t'),
+                    b"br" | b"cr" | b"p" => out.push('\n'),
                     _ => {}
                 }
             }
@@ -107,7 +137,7 @@ fn try_antiword(path: &Path) -> anyhow::Result<String> {
     if !out.status.success() {
         return Err(anyhow!("antiword failed"));
     }
-    String::from_utf8(out.stdout).map_err(|e| anyhow!("antiword output not UTF-8: {}", e))
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 fn try_catdoc(path: &Path) -> anyhow::Result<String> {
@@ -118,7 +148,7 @@ fn try_catdoc(path: &Path) -> anyhow::Result<String> {
     if !out.status.success() {
         return Err(anyhow!("catdoc failed"));
     }
-    String::from_utf8(out.stdout).map_err(|e| anyhow!("catdoc output not UTF-8: {}", e))
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 fn try_soffice_txt(path: &Path) -> anyhow::Result<String> {
@@ -138,10 +168,16 @@ fn try_soffice_txt(path: &Path) -> anyhow::Result<String> {
                 .unwrap_or(0),
             bin
         ));
-        if std::fs::create_dir_all(&out_dir).is_err() {
-            continue;
-        }
-        let txt_path = out_dir.join(format!("{}.txt", stem));
+
+        let guard = match TempDirGuard::create(out_dir) {
+            Ok(g) => g,
+            Err(e) => {
+                last_err = anyhow!("temp directory: {}", e);
+                continue;
+            }
+        };
+
+        let txt_path = guard.path().join(format!("{}.txt", stem));
 
         let status = match Command::new(bin)
             .args([
@@ -153,13 +189,12 @@ fn try_soffice_txt(path: &Path) -> anyhow::Result<String> {
             ])
             .arg(path.as_os_str())
             .arg("--outdir")
-            .arg(&out_dir)
+            .arg(guard.path())
             .status()
         {
             Ok(s) => s,
             Err(e) => {
                 last_err = anyhow!("{}: {}", bin, e);
-                let _ = std::fs::remove_dir_all(&out_dir);
                 continue;
             }
         };
@@ -169,7 +204,7 @@ fn try_soffice_txt(path: &Path) -> anyhow::Result<String> {
         } else {
             Err(anyhow!("{} conversion failed or output missing", bin))
         };
-        let _ = std::fs::remove_dir_all(&out_dir);
+
         match read {
             Ok(s) => return Ok(s),
             Err(e) => last_err = e,

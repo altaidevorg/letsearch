@@ -161,7 +161,7 @@ impl Handler<CreateCollection> for CollectionManagerActor {
                 })
                 .await??;
 
-            let collection_actor = CollectionActor::new(msg.config, model_manager);
+            let collection_actor = CollectionActor::try_new(msg.config, model_manager)?;
             let collection_addr = collection_actor.start();
 
             self_addr.do_send(UpdateCollection {
@@ -202,7 +202,7 @@ impl Handler<LoadCollection> for CollectionManagerActor {
                 })
                 .await??;
 
-            let actor = CollectionActor::new(config, model_manager);
+            let actor = CollectionActor::try_new(config, model_manager)?;
             let collection_addr = actor.start();
 
             self_addr.do_send(UpdateCollection {

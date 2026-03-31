@@ -147,22 +147,25 @@ pub struct CollectionDbActor {
 }
 
 impl CollectionDbActor {
-    pub fn new(config: CollectionConfig) -> Self {
+    /// Create collection directory (if needed) and write `config.json`. Does not open DuckDB.
+    pub fn prepare_collection_layout(config: &CollectionConfig) -> Result<(), ProjectError> {
         let collection_dir = home_dir().join("collections").join(config.name.as_str());
-
-        // ensure dir exists
-        std::fs::create_dir_all(&collection_dir).unwrap();
-
-        config.write_to_collection_dir().unwrap_or_else(|e| {
-            panic!(
-                "Failed to persist collection config under {}: {}",
+        std::fs::create_dir_all(&collection_dir).map_err(|e| {
+            ProjectError::Anyhow(anyhow::anyhow!(
+                "Failed to create collection directory {}: {}",
                 collection_dir.display(),
                 e
-            );
-        });
+            ))
+        })?;
+        config.write_to_collection_dir()?;
+        Ok(())
+    }
 
+    /// Open DuckDB and load vector indices. Call after [`prepare_collection_layout`] on the sync worker thread.
+    pub fn open_collection_db(config: CollectionConfig) -> Result<Self, ProjectError> {
+        let collection_dir = home_dir().join("collections").join(config.name.as_str());
         let db_path = collection_dir.join(config.db_path.as_str());
-        let conn = duckdb::Connection::open(&db_path).expect("Failed to open DuckDB connection");
+        let conn = duckdb::Connection::open(&db_path)?;
 
         let mut vector_indices = HashMap::new();
         let index_dir = collection_dir.join(config.index_dir.as_str());
@@ -175,11 +178,11 @@ impl CollectionDbActor {
             }
         }
 
-        Self {
+        Ok(Self {
             conn,
             vector_indices,
             config,
-        }
+        })
     }
 }
 
@@ -193,10 +196,8 @@ impl Handler<DbImportJsonl> for CollectionDbActor {
     fn handle(&mut self, msg: DbImportJsonl, _ctx: &mut SyncContext<Self>) -> Self::Result {
         let tx = self.conn.transaction()?;
         let table = duckdb_quote_ident(&self.config.name);
-        tx.execute_batch(&format!(
-            "CREATE TABLE {} AS SELECT * FROM read_json_auto('{}');",
-            table, msg.path
-        ))?;
+        let create_sql = format!("CREATE TABLE {} AS SELECT * FROM read_json_auto(?);", table);
+        tx.execute(create_sql.as_str(), duckdb::params![msg.path])?;
 
         let query = format!(
             "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = '{}' AND column_name = '_key';",
@@ -222,10 +223,8 @@ impl Handler<DbImportParquet> for CollectionDbActor {
     fn handle(&mut self, msg: DbImportParquet, _ctx: &mut SyncContext<Self>) -> Self::Result {
         let tx = self.conn.transaction()?;
         let table = duckdb_quote_ident(&self.config.name);
-        tx.execute_batch(&format!(
-            "CREATE TABLE {} AS SELECT * FROM read_parquet('{}');",
-            table, msg.path
-        ))?;
+        let create_sql = format!("CREATE TABLE {} AS SELECT * FROM read_parquet(?);", table);
+        tx.execute(create_sql.as_str(), duckdb::params![msg.path])?;
 
         let query = format!(
             "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = '{}' AND column_name = '_key';",
@@ -628,15 +627,27 @@ pub struct CollectionActor {
 }
 
 impl CollectionActor {
-    pub fn new(config: CollectionConfig, model_manager: Addr<ModelManagerActor>) -> Self {
-        let config_clone = config.clone();
-        let db_actor = SyncArbiter::start(1, move || CollectionDbActor::new(config_clone.clone()));
+    pub fn try_new(
+        config: CollectionConfig,
+        model_manager: Addr<ModelManagerActor>,
+    ) -> Result<Self, ProjectError> {
+        CollectionDbActor::prepare_collection_layout(&config)?;
+        let config_for_db = config.clone();
+        let db_actor = SyncArbiter::start(1, move || {
+            // `SyncArbiter` requires `Fn`, so clone config on each factory invocation.
+            CollectionDbActor::open_collection_db(config_for_db.clone()).unwrap_or_else(|e| {
+                panic!(
+                    "Failed to open DuckDB for collection after layout was prepared: {}",
+                    e
+                )
+            })
+        });
 
-        Self {
+        Ok(Self {
             config,
             model_manager,
             db_actor,
-        }
+        })
     }
 }
 
