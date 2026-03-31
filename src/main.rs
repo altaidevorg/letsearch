@@ -309,6 +309,15 @@ async fn main() -> anyhow::Result<()> {
             chunk_overlap_tokens,
             tokenizer_path,
         } => {
+            for c in index_columns.iter() {
+                if !is_safe_sql_identifier(c) {
+                    return Err(anyhow::anyhow!(
+                        "Invalid --index-columns '{}': only letters, digits, and underscores are allowed",
+                        c
+                    ));
+                }
+            }
+
             let mut config = CollectionConfig::default();
             config.name = collection_name.to_string();
             config.index_columns = index_columns.to_vec();
@@ -511,6 +520,13 @@ async fn main() -> anyhow::Result<()> {
             hf_token,
             gemini_api_key,
         } => {
+            if !is_safe_sql_identifier(column) {
+                return Err(anyhow::anyhow!(
+                    "Invalid --column '{}': only letters, digits, and underscores are allowed",
+                    column
+                ));
+            }
+
             let token = hf_token.clone().or_else(|| std::env::var("HF_TOKEN").ok());
             let gemini_key = gemini_api_key
                 .clone()

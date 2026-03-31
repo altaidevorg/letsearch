@@ -113,6 +113,16 @@ pub struct DbInitIndex {
 pub struct DbGetBatch {
     pub column: String,
     pub batch_size: u64,
+    /// Rows are returned in `_key` order. `None` starts from the smallest `_key`;
+    /// `Some(k)` returns rows with `_key > k` (keyset pagination).
+    pub after_key: Option<u64>,
+}
+
+/// `_key` at the given 0-based row position in `ORDER BY _key ASC` (single row).
+/// Used once when resuming incremental embedding so the first page can use keyset (`WHERE _key > ?`).
+#[derive(Message)]
+#[rtype(result = "Result<Option<u64>, ProjectError>")]
+pub struct DbGetKeyAtOrderOffset {
     pub offset: u64,
 }
 
@@ -338,6 +348,7 @@ impl Handler<DbImportMarkdownChunks> for CollectionDbActor {
             )));
         }
 
+        let col_sql = duckdb_quote_ident(&msg.column);
         let tx = self.conn.transaction()?;
         let table_sql = duckdb_quote_ident(&self.config.name);
 
@@ -357,7 +368,7 @@ impl Handler<DbImportMarkdownChunks> for CollectionDbActor {
                  CREATE SEQUENCE keys_seq; \
                  ALTER TABLE {table} ADD COLUMN _key UBIGINT DEFAULT NEXTVAL('keys_seq');",
                 table = table_sql,
-                col = msg.column,
+                col = col_sql,
             ))?;
         } else {
             // Table exists — ensure the target column is present.
@@ -372,7 +383,7 @@ impl Handler<DbImportMarkdownChunks> for CollectionDbActor {
             if col_exists == 0 {
                 tx.execute_batch(&format!(
                     "ALTER TABLE {} ADD COLUMN {} VARCHAR;",
-                    table_sql, msg.column
+                    table_sql, col_sql
                 ))?;
             }
         }
@@ -380,7 +391,7 @@ impl Handler<DbImportMarkdownChunks> for CollectionDbActor {
         // Insert each chunk using a parameterised statement.
         let insert_sql = format!(
             "INSERT INTO {} ({}) VALUES (?);",
-            table_sql, msg.column
+            table_sql, col_sql
         );
         let mut stmt = tx.prepare(&insert_sql)?;
         for chunk in &msg.chunks {
@@ -410,7 +421,8 @@ impl Handler<DbGetRowCount> for CollectionDbActor {
 
     fn handle(&mut self, msg: DbGetRowCount, _ctx: &mut SyncContext<Self>) -> Self::Result {
         let table_sql = duckdb_quote_ident(&self.config.name);
-        let query = format!("SELECT COUNT('{}') FROM {};", msg.column, table_sql);
+        let col_sql = duckdb_quote_ident(&msg.column);
+        let query = format!("SELECT COUNT({}) FROM {};", col_sql, table_sql);
         let mut stmt = self.conn.prepare(&query)?;
         let count: i64 = stmt.query_row([], |row| row.get(0))?;
         Ok(count as u64)
@@ -452,16 +464,49 @@ impl Handler<DbInitIndex> for CollectionDbActor {
     }
 }
 
+impl Handler<DbGetKeyAtOrderOffset> for CollectionDbActor {
+    type Result = Result<Option<u64>, ProjectError>;
+
+    fn handle(&mut self, msg: DbGetKeyAtOrderOffset, _ctx: &mut SyncContext<Self>) -> Self::Result {
+        let table_sql = duckdb_quote_ident(&self.config.name);
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT _key FROM {} ORDER BY _key ASC LIMIT 1 OFFSET ?",
+            table_sql
+        ))?;
+        let mut rows = stmt.query(duckdb::params![msg.offset as i64])?;
+        if let Some(row) = rows.next()? {
+            let key: u64 = row.get(0)?;
+            return Ok(Some(key));
+        }
+        Ok(None)
+    }
+}
+
 impl Handler<DbGetBatch> for CollectionDbActor {
     type Result = Result<(Vec<String>, Vec<u64>), ProjectError>;
 
     fn handle(&mut self, msg: DbGetBatch, _ctx: &mut SyncContext<Self>) -> Self::Result {
         let table_sql = duckdb_quote_ident(&self.config.name);
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT {}, _key FROM {} LIMIT {} OFFSET {};",
-            msg.column, table_sql, msg.batch_size, msg.offset
-        ))?;
-        let result: Vec<RecordBatch> = stmt.query_arrow([])?.collect();
+        let col_sql = duckdb_quote_ident(&msg.column);
+        let limit = i64::try_from(msg.batch_size)
+            .map_err(|_| ProjectError::Anyhow(anyhow!("batch size out of range")))?;
+
+        let result: Vec<RecordBatch> = match msg.after_key {
+            None => {
+                let mut stmt = self.conn.prepare(&format!(
+                    "SELECT {}, _key FROM {} ORDER BY _key ASC LIMIT ?",
+                    col_sql, table_sql
+                ))?;
+                stmt.query_arrow(duckdb::params![limit])?.collect()
+            }
+            Some(after) => {
+                let mut stmt = self.conn.prepare(&format!(
+                    "SELECT {}, _key FROM {} WHERE _key > ? ORDER BY _key ASC LIMIT ?",
+                    col_sql, table_sql
+                ))?;
+                stmt.query_arrow(duckdb::params![after, limit])?.collect()
+            }
+        };
         if result.is_empty() {
             return Ok((vec![], vec![]));
         }
@@ -569,9 +614,10 @@ impl Handler<DbSearchAndFetch> for CollectionDbActor {
             .collect::<Vec<_>>()
             .join(", ");
         let table_sql = duckdb_quote_ident(&self.config.name);
+        let col_sql = duckdb_quote_ident(&msg.column);
         let query = format!(
             "SELECT _key, {} FROM {} WHERE _key IN ({});",
-            msg.column, table_sql, keys_str
+            col_sql, table_sql, keys_str
         );
         let mut stmt = self.conn.prepare(&query)?;
 
@@ -943,7 +989,7 @@ impl Handler<EmbedColumn> for CollectionActor {
                 .await??;
             let start_offset = already_indexed;
             let remaining = count.saturating_sub(start_offset);
-            let num_batches = (remaining + batch_size - 1) / batch_size;
+            let num_batches = ((remaining + batch_size - 1) / batch_size).max(1);
 
             info!(
                 "Starting to index {} new records from column '{}' in batches of {} (skipping {} already indexed)",
@@ -955,11 +1001,32 @@ impl Handler<EmbedColumn> for CollectionActor {
                 return Ok(());
             }
 
-            let start = Instant::now();
+            let mut after_key: Option<u64> = if already_indexed == 0 {
+                None
+            } else {
+                match db_actor
+                    .send(DbGetKeyAtOrderOffset {
+                        offset: already_indexed.saturating_sub(1),
+                    })
+                    .await??
+                {
+                    Some(key) => Some(key),
+                    None => {
+                        return Err(ProjectError::Anyhow(anyhow!(
+                            "Cannot resume embedding: fewer table rows than indexed count for column '{}' (indexed {} rows by key order)",
+                            column_name,
+                            already_indexed
+                        )));
+                    }
+                }
+            };
 
-            for batch in 0..num_batches {
+            let start = Instant::now();
+            let mut batch_idx: u64 = 0;
+
+            loop {
                 let elapsed = start.elapsed();
-                let steps_completed = batch as f64;
+                let steps_completed = batch_idx as f64;
                 let total_steps = num_batches as f64;
                 let eta = if steps_completed > 0.0 {
                     elapsed.mul_f64((total_steps - steps_completed) / steps_completed)
@@ -967,22 +1034,26 @@ impl Handler<EmbedColumn> for CollectionActor {
                     Duration::ZERO
                 };
 
-                print!("\r{} / {} batches - ETA: {:?}", batch, total_steps, eta);
+                print!(
+                    "\r{} / ~{} batches - ETA: {:?}",
+                    batch_idx, total_steps, eta
+                );
                 let _ = std::io::Write::flush(&mut std::io::stdout());
-
-                let offset = start_offset + batch * batch_size;
 
                 let (texts, keys) = db_actor
                     .send(DbGetBatch {
                         column: column_name.clone(),
                         batch_size,
-                        offset,
+                        after_key,
                     })
                     .await??;
 
                 if texts.is_empty() {
                     break;
                 }
+
+                let batch_row_count = keys.len();
+                after_key = keys.last().copied();
 
                 let embeddings = model_manager
                     .send(Predict {
@@ -998,6 +1069,12 @@ impl Handler<EmbedColumn> for CollectionActor {
                         embeddings,
                     })
                     .await??;
+
+                batch_idx += 1;
+
+                if batch_row_count < batch_size as usize {
+                    break;
+                }
             }
 
             db_actor
