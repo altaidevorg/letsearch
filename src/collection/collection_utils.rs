@@ -1,3 +1,4 @@
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::BufWriter;
@@ -96,6 +97,38 @@ impl CollectionConfig {
         let w = BufWriter::new(f);
         serde_json::to_writer_pretty(w, self)?;
         Ok(())
+    }
+
+    /// Create collection directory, write `config.json`, and an empty DuckDB file. No embedding model is loaded.
+    pub fn init_on_disk(config: &CollectionConfig, overwrite: bool) -> anyhow::Result<PathBuf> {
+        let collection_dir = home_dir().join("collections").join(config.name.as_str());
+        if collection_dir.exists() {
+            if !overwrite {
+                anyhow::bail!(
+                    "Collection '{}' already exists at {}. Pass --overwrite to delete and recreate.",
+                    config.name,
+                    collection_dir.display()
+                );
+            }
+            std::fs::remove_dir_all(&collection_dir).with_context(|| {
+                format!(
+                    "Failed to remove existing collection directory {}",
+                    collection_dir.display()
+                )
+            })?;
+        }
+        std::fs::create_dir_all(&collection_dir).with_context(|| {
+            format!("Failed to create {}", collection_dir.display())
+        })?;
+        config.write_to_collection_dir()?;
+        let db_path = collection_dir.join(config.db_path.as_str());
+        duckdb::Connection::open(&db_path).with_context(|| {
+            format!(
+                "Failed to create empty database {}",
+                db_path.display()
+            )
+        })?;
+        Ok(collection_dir)
     }
 }
 
