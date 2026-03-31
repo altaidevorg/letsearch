@@ -12,6 +12,21 @@ pub fn home_dir() -> PathBuf {
         .into()
 }
 
+/// Returns true when `name` is safe as an unquoted SQL identifier (letters, digits, `_` only).
+///
+/// Use for CLI column names and anywhere an identifier is embedded in SQL after quoting checks
+/// or with [`duckdb_quote_ident`].
+pub fn is_valid_sql_identifier(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Double-quote a DuckDB identifier, escaping embedded `"` as `""`.
+///
+/// Unquoted names containing `.` are parsed as `schema.table`, which breaks collection names like `foo.bar`.
+pub fn duckdb_quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub struct CollectionConfig {
     #[serde(default = "default_collection_name")]

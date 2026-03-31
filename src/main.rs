@@ -14,7 +14,9 @@ use letsearch::actors::collection_manager_actor::{
 };
 use letsearch::actors::model_actor::{LoadModel, ModelManagerActor};
 use letsearch::chunker::ChunkerConfig;
-use letsearch::collection::collection_utils::{home_dir, CollectionConfig};
+use letsearch::collection::collection_utils::{
+    duckdb_quote_ident, home_dir, is_valid_sql_identifier, CollectionConfig,
+};
 use letsearch::hf_ops::list_models;
 use letsearch::serve::run_server;
 use log::{info, Record};
@@ -416,12 +418,8 @@ fn sanitize_file_path_arg(s: &str) -> String {
         .to_string()
 }
 
-fn is_safe_sql_identifier(name: &str) -> bool {
-    !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
-}
-
 fn validate_sql_identifier(name: &str, arg_name: &str) -> anyhow::Result<()> {
-    if is_safe_sql_identifier(name) {
+    if is_valid_sql_identifier(name) {
         Ok(())
     } else {
         Err(anyhow::anyhow!(
@@ -437,10 +435,6 @@ fn validate_sql_identifiers(cols: &[String], arg_name: &str) -> anyhow::Result<(
         validate_sql_identifier(c, arg_name)?;
     }
     Ok(())
-}
-
-fn duckdb_quote_ident_cli(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 #[actix::main]
@@ -723,8 +717,8 @@ async fn main() -> anyhow::Result<()> {
                 )
             })?;
 
-            let table_sql = duckdb_quote_ident_cli(&config.name);
-            let col_sql = duckdb_quote_ident_cli(column);
+            let table_sql = duckdb_quote_ident(&config.name);
+            let col_sql = duckdb_quote_ident(column);
             let sql = format!(
                 "SELECT _key, {col_sql} FROM {table_sql} ORDER BY _key LIMIT ? OFFSET ?"
             );

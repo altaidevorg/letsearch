@@ -11,27 +11,14 @@ use usearch::{IndexOptions, MetricKind, ScalarKind};
 
 use crate::actors::model_actor::{GetModelMetadata, ModelManagerActor, Predict};
 use crate::chunker::ChunkerConfig;
-use crate::collection::collection_utils::{home_dir, CollectionConfig, SearchResult};
+use crate::collection::collection_utils::{
+    duckdb_quote_ident, home_dir, is_valid_sql_identifier, CollectionConfig, SearchResult,
+};
 use crate::collection::vector_index::VectorIndex;
 use crate::error::ProjectError;
 use crate::model::model_utils::{Embeddings, ModelOutputDType};
 
 // ---- Helpers ----
-
-/// Return `true` when `name` is a safe SQL identifier (alphanumeric + `_`).
-///
-/// Column names and other identifiers that must be interpolated directly into
-/// SQL strings (they cannot be parameterized) are validated with this guard
-/// to prevent SQL-injection attacks.
-fn is_valid_identifier(name: &str) -> bool {
-    !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
-}
-
-/// Quote a DuckDB table (or schema-qualified) identifier. Unquoted names with `.`
-/// are parsed as `schema.table`, which breaks collection names like `Ataturk.md_test`.
-fn duckdb_quote_ident(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
-}
 
 fn indexed_columns_list(indices: &HashMap<String, VectorIndex>) -> String {
     let mut cols: Vec<&str> = indices.keys().map(String::as_str).collect();
@@ -341,7 +328,7 @@ impl Handler<DbImportMarkdownChunks> for CollectionDbActor {
 
         // Validate the column name to prevent SQL injection (column names cannot
         // be passed as bind parameters in SQL).
-        if !is_valid_identifier(&msg.column) {
+        if !is_valid_sql_identifier(&msg.column) {
             return Err(ProjectError::Anyhow(anyhow!(
                 "Invalid column name '{}': only alphanumeric characters and underscores are allowed",
                 msg.column
@@ -1014,7 +1001,7 @@ impl Handler<EmbedColumn> for CollectionActor {
                 .await??;
             let start_offset = already_indexed;
             let remaining = count.saturating_sub(start_offset);
-            let num_batches = ((remaining + batch_size - 1) / batch_size).max(1);
+            let num_batches = (remaining + batch_size - 1) / batch_size;
 
             info!(
                 "Starting to index {} new records from column '{}' in batches of {} (skipping {} already indexed)",
