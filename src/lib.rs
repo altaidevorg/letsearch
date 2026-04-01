@@ -6,3 +6,4 @@ pub mod hf_ops;
 pub mod model;
 pub mod pdf;
 pub mod serve;
+pub mod word;

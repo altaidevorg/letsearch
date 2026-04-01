@@ -29,6 +29,8 @@ thiserror = "1.0"
 criterion = {version = "0.5.1", features = ["async_tokio"]}
 pdf_oxide = "0.3.17"
 tokie = "0.0.5"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.37"
 
 [[bench]]
 name = "benchmarks"

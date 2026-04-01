@@ -1,5 +1,7 @@
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
+use std::io::BufWriter;
 use std::path::PathBuf;
 
 const DEFAULT_HOME_DIR: &str = ".letsearch";
@@ -8,6 +10,21 @@ pub fn home_dir() -> PathBuf {
     std::env::var("LETSEARCH_HOME")
         .unwrap_or_else(|_| DEFAULT_HOME_DIR.to_string())
         .into()
+}
+
+/// Returns true when `name` is safe as an unquoted SQL identifier (letters, digits, `_` only).
+///
+/// Use for CLI column names and anywhere an identifier is embedded in SQL after quoting checks
+/// or with [`duckdb_quote_ident`].
+pub fn is_valid_sql_identifier(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// Double-quote a DuckDB identifier, escaping embedded `"` as `""`.
+///
+/// Unquoted names containing `.` are parsed as `schema.table`, which breaks collection names like `foo.bar`.
+pub fn duckdb_quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -72,9 +89,61 @@ impl CollectionConfig {
     pub fn from_file(name: &str) -> anyhow::Result<Self> {
         let collection_dir = home_dir().join("collections").join(name);
         let config_path = collection_dir.join("config.json");
-        let config_file = File::open(config_path)?;
+        let config_file = File::open(&config_path).map_err(|e| {
+            anyhow::anyhow!(
+                "Cannot open collection config at {}: {}. \
+                 Run `letsearch index` from the same working directory (or set LETSEARCH_HOME) \
+                 so the collection is created under .letsearch/collections/<name>/.",
+                config_path.display(),
+                e
+            )
+        })?;
         let config: CollectionConfig = serde_json::from_reader(config_file)?;
         Ok(config)
+    }
+
+    /// Writes this config to `LETSEARCH_HOME/collections/<name>/config.json`.
+    /// Called when a collection is opened so `search`, `serve`, and `add-docs` can reload it in a new process.
+    pub fn write_to_collection_dir(&self) -> anyhow::Result<()> {
+        let collection_dir = home_dir().join("collections").join(self.name.as_str());
+        std::fs::create_dir_all(&collection_dir)?;
+        let path = collection_dir.join("config.json");
+        let f = File::create(&path)?;
+        let w = BufWriter::new(f);
+        serde_json::to_writer_pretty(w, self)?;
+        Ok(())
+    }
+
+    /// Create collection directory, write `config.json`, and an empty DuckDB file. No embedding model is loaded.
+    pub fn init_on_disk(config: &CollectionConfig, overwrite: bool) -> anyhow::Result<PathBuf> {
+        let collection_dir = home_dir().join("collections").join(config.name.as_str());
+        if collection_dir.exists() {
+            if !overwrite {
+                anyhow::bail!(
+                    "Collection '{}' already exists at {}. Pass --overwrite to delete and recreate.",
+                    config.name,
+                    collection_dir.display()
+                );
+            }
+            std::fs::remove_dir_all(&collection_dir).with_context(|| {
+                format!(
+                    "Failed to remove existing collection directory {}",
+                    collection_dir.display()
+                )
+            })?;
+        }
+        std::fs::create_dir_all(&collection_dir).with_context(|| {
+            format!("Failed to create {}", collection_dir.display())
+        })?;
+        config.write_to_collection_dir()?;
+        let db_path = collection_dir.join(config.db_path.as_str());
+        duckdb::Connection::open(&db_path).with_context(|| {
+            format!(
+                "Failed to create empty database {}",
+                db_path.display()
+            )
+        })?;
+        Ok(collection_dir)
     }
 }
 
